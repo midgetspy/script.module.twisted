@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="script.module.twisted" name="Twisted" version="13.2.0"
-	provider-name="mablae">
+<addon id="script.module.twisted" name="Twisted" version="13.2.0" provider-name="mablae">
 	<requires>
 		<import addon="xbmc.python" version="2.1.0" />
 		<import addon="script.module.zope-interfaces" version="4.0.5"/>
@@ -9,7 +8,7 @@
 	<extension point="xbmc.addon.metadata">
 		<summary lang="en">twisted Network Lib repack for XBMC</summary>
 		<description lang="en">Twisted is an event-driven networking engine written in
-                        Python and licensed under the open source MIT Licence</description>
+            Python and licensed under the open source MIT Licence</description>
 		<disclaimer>This addon makes no warranties, expressed or implied, and
 			hereby disclaims and negates all other warranties, including without
 			limitation, implied warranties or conditions of merchantability,
@@ -21,7 +20,7 @@
 			materials or on any sites linked to this addon. Videos are soruced
 			from video-hosting websites that are having full rights to remove
 			such access to video if required.</disclaimer>
-		<license>GNU GPL v3</license>
+		<license>MIT</license>
 		<platform>all</platform>
 		<source>https://github.com/mablae/script.module.twisted.git</source>
 		<website>http://twistedmatrix.com/trac/wiki</website>
