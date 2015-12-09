@@ -68,7 +68,20 @@ class FakeReactor(object):
 
 
 
-class DistTrialRunnerTestCase(TestCase):
+class EternalTerminationPredicateFactory(object):
+    """
+    A rigged terminationPredicateFactory for which time never pass.
+    """
+
+    def __call__(self):
+        """
+        See: L{task._Timer}
+        """
+        return False
+
+
+
+class DistTrialRunnerTests(TestCase):
     """
     Tests for L{DistTrialRunner}.
     """
@@ -80,6 +93,23 @@ class DistTrialRunnerTestCase(TestCase):
         self.runner = DistTrialRunner(TreeReporter, 4, [],
                                       workingDirectory=self.mktemp())
         self.runner._stream = StringIO()
+
+
+    def getFakeSchedulerAndEternalCooperator(self):
+        """
+        Helper to create fake scheduler and cooperator in tests.
+
+        The cooperator has a termination timer which will never inform
+        the scheduler that the task needs to be terminated.
+
+        @return: L{tuple} of (scheduler, cooperator)
+        """
+        scheduler = FakeScheduler()
+        cooperator = Cooperator(
+            scheduler=scheduler,
+            terminationPredicateFactory=EternalTerminationPredicateFactory,
+            )
+        return scheduler, cooperator
 
 
     def test_writeResults(self):
@@ -250,8 +280,7 @@ class DistTrialRunnerTestCase(TestCase):
             def failingRun(self, case, result):
                 return fail(RuntimeError("oops"))
 
-        scheduler = FakeScheduler()
-        cooperator = Cooperator(scheduler=scheduler)
+        scheduler, cooperator = self.getFakeSchedulerAndEternalCooperator()
 
         fakeReactor = FakeReactorWithFail()
         result = self.runner.run(TestCase(), fakeReactor,
@@ -293,7 +322,7 @@ class DistTrialRunnerTestCase(TestCase):
             localLock = FilesystemLock(workingDirectory + ".lock")
             self.assertTrue(localLock.lock())
             self.assertEqual(1, fakeReactor.stopCount)
-            # We don't wait for the process deferreds here, so nothign is
+            # We don't wait for the process deferreds here, so nothing is
             # returned by the function before shutdown
             self.assertIdentical(None, functions[0]())
 
@@ -361,8 +390,7 @@ class DistTrialRunnerTestCase(TestCase):
 
         fakeReactor = FakeReactorWithSuccess()
 
-        scheduler = FakeScheduler()
-        cooperator = Cooperator(scheduler=scheduler)
+        scheduler, cooperator = self.getFakeSchedulerAndEternalCooperator()
 
         result = self.runner.run(
             TestCase(), fakeReactor, cooperate=cooperator.cooperate,

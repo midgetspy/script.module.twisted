@@ -12,10 +12,10 @@ from __future__ import division, absolute_import
 
 import inspect
 import os, warnings, sys, tempfile, types
-from pprint import pformat
 from dis import findlinestarts as _findlinestarts
 
 from twisted.python import failure, log, monkey
+from twisted.python.reflect import fullyQualifiedName
 from twisted.python.util import runWithWarningsSuppressed
 from twisted.python.deprecate import (
     getDeprecationWarningString, warnAboutFunction)
@@ -269,6 +269,100 @@ class PyUnitResultAdapter(object):
 
 
 
+class _AssertRaisesContext(object):
+    """
+    A helper for implementing C{assertRaises}.  This is a context manager and a
+    helper method to support the non-context manager version of
+    C{assertRaises}.
+
+    @ivar _testCase: See C{testCase} parameter of C{__init__}
+
+    @ivar _expected: See C{expected} parameter of C{__init__}
+
+    @ivar _returnValue: The value returned by the callable being tested (only
+        when not being used as a context manager).
+
+    @ivar _expectedName: A short string describing the expected exception
+        (usually the name of the exception class).
+
+    @ivar exception: The exception which was raised by the function being
+        tested (if it raised one).
+    """
+
+    def __init__(self, testCase, expected):
+        """
+        @param testCase: The L{TestCase} instance which is used to raise a
+            test-failing exception when that is necessary.
+
+        @param expected: The exception type expected to be raised.
+        """
+        self._testCase = testCase
+        self._expected = expected
+        self._returnValue = None
+        try:
+            self._expectedName = self._expected.__name__
+        except AttributeError:
+            self._expectedName = str(self._expected)
+
+
+    def _handle(self, obj):
+        """
+        Call the given object using this object as a context manager.
+
+        @param obj: The object to call and which is expected to raise some
+            exception.
+        @type obj: L{object}
+
+        @return: Whatever exception is raised by C{obj()}.
+        @rtype: L{BaseException}
+        """
+        with self as context:
+            self._returnValue = obj()
+        return context.exception
+
+
+    def __enter__(self):
+        return self
+
+
+    def __exit__(self, exceptionType, exceptionValue, traceback):
+        """
+        Check exit exception against expected exception.
+        """
+        # No exception raised.
+        if exceptionType is None:
+            self._testCase.fail(
+                "{0} not raised ({1} returned)".format(
+                    self._expectedName, self._returnValue)
+                )
+
+        if not isinstance(exceptionValue, exceptionType):
+            # Support some Python 2.6 ridiculousness.  Exceptions raised using
+            # the C API appear here as the arguments you might pass to the
+            # exception class to create an exception instance.  So... do that
+            # to turn them into the instances.
+            if isinstance(exceptionValue, tuple):
+                exceptionValue = exceptionType(*exceptionValue)
+            else:
+                exceptionValue = exceptionType(exceptionValue)
+
+        # Store exception so that it can be access from context.
+        self.exception = exceptionValue
+
+        # Wrong exception raised.
+        if not issubclass(exceptionType, self._expected):
+            reason = failure.Failure(exceptionValue, exceptionType, traceback)
+            self._testCase.fail(
+                "{0} raised instead of {1}:\n {2}".format(
+                    fullyQualifiedName(exceptionType),
+                    self._expectedName, reason.getTraceback()),
+                )
+
+        # All good.
+        return True
+
+
+
 class _Assertions(pyunit.TestCase, object):
     """
     Replaces many of the built-in TestCase assertions. In general, these
@@ -292,8 +386,7 @@ class _Assertions(pyunit.TestCase, object):
 
         @param condition: any object that defines __nonzero__
         """
-        if condition:
-            raise self.failureException(msg)
+        super(_Assertions, self).assertFalse(condition, msg)
         return condition
     assertNot = failUnlessFalse = failIf = assertFalse
 
@@ -304,13 +397,12 @@ class _Assertions(pyunit.TestCase, object):
 
         @param condition: any object that defines __nonzero__
         """
-        if not condition:
-            raise self.failureException(msg)
+        super(_Assertions, self).assertTrue(condition, msg)
         return condition
     assert_ = failUnlessTrue = failUnless = assertTrue
 
 
-    def assertRaises(self, exception, f, *args, **kwargs):
+    def assertRaises(self, exception, f=None, *args, **kwargs):
         """
         Fail the test unless calling the function C{f} with the given
         C{args} and C{kwargs} raises C{exception}. The failure will report
@@ -319,41 +411,30 @@ class _Assertions(pyunit.TestCase, object):
         @param exception: exception type that is to be expected
         @param f: the function to call
 
-        @return: The raised exception instance, if it is of the given type.
+        @return: If C{f} is C{None}, a context manager which will make an
+            assertion about the exception raised from the suite it manages.  If
+            C{f} is not C{None}, the exception raised by C{f}.
+
         @raise self.failureException: Raised if the function call does
             not raise an exception or if it raises an exception of a
             different type.
         """
-        try:
-            result = f(*args, **kwargs)
-        except exception as inst:
-            return inst
-        except:
-            raise self.failureException('%s raised instead of %s:\n %s'
-                                        % (sys.exc_info()[0],
-                                           exception.__name__,
-                                           failure.Failure().getTraceback()))
-        else:
-            raise self.failureException('%s not raised (%r returned)'
-                                        % (exception.__name__, result))
+        context = _AssertRaisesContext(self, exception)
+        if f is None:
+            return context
+
+        return context._handle(lambda: f(*args, **kwargs))
     failUnlessRaises = assertRaises
 
 
-    def assertEqual(self, first, second, msg=''):
+    def assertEqual(self, first, second, msg=None):
         """
         Fail the test if C{first} and C{second} are not equal.
 
         @param msg: A string describing the failure that's included in the
             exception.
         """
-        if not first == second:
-            if msg is None:
-                msg = ''
-            if len(msg) > 0:
-                msg += '\n'
-            raise self.failureException(
-                '%snot equal:\na = %s\nb = %s\n'
-                % (msg, pformat(first), pformat(second)))
+        super(_Assertions, self).assertEqual(first, second, msg)
         return first
     failUnlessEqual = failUnlessEquals = assertEquals = assertEqual
 
@@ -443,9 +524,9 @@ class _Assertions(pyunit.TestCase, object):
 
         @note: decimal places (from zero) is usually not the same
                as significant digits (measured from the most
-               signficant digit).
+               significant digit).
 
-        @note: included for compatiblity with PyUnit test cases
+        @note: included for compatibility with PyUnit test cases
         """
         if round(second-first, places) == 0:
             raise self.failureException(msg or '%r == %r within %r places'
@@ -463,9 +544,9 @@ class _Assertions(pyunit.TestCase, object):
 
         @note: decimal places (from zero) is usually not the same
                as significant digits (measured from the most
-               signficant digit).
+               significant digit).
 
-        @note: included for compatiblity with PyUnit test cases
+        @note: included for compatibility with PyUnit test cases
         """
         if round(second-first, places) != 0:
             raise self.failureException(msg or '%r != %r within %r places'
@@ -594,7 +675,7 @@ class _Assertions(pyunit.TestCase, object):
     def successResultOf(self, deferred):
         """
         Return the current success result of C{deferred} or raise
-        C{self.failException}.
+        C{self.failureException}.
 
         @param deferred: A L{Deferred<twisted.internet.defer.Deferred>} which
             has a success result.  This means
@@ -629,7 +710,7 @@ class _Assertions(pyunit.TestCase, object):
     def failureResultOf(self, deferred, *expectedExceptionTypes):
         """
         Return the current failure result of C{deferred} or raise
-        C{self.failException}.
+        C{self.failureException}.
 
         @param deferred: A L{Deferred<twisted.internet.defer.Deferred>} which
             has a failure result.  This means
@@ -641,7 +722,7 @@ class _Assertions(pyunit.TestCase, object):
         @type deferred: L{Deferred<twisted.internet.defer.Deferred>}
 
         @param expectedExceptionTypes: Exception types to expect - if
-            provided, and the the exception wrapped by the failure result is
+            provided, and the exception wrapped by the failure result is
             not one of the types provided, then this test will fail.
 
         @raise SynchronousTestCase.failureException: If the
@@ -1207,6 +1288,12 @@ class SynchronousTestCase(_Assertions):
         @return: C{True} if the method fails and no further method/fixture calls
             should be made, C{False} otherwise.
         """
+        if inspect.isgeneratorfunction(method):
+            exc = TypeError(
+                '%r is a generator function and therefore will never run' % (
+                    method,))
+            result.addError(self, failure.Failure(exc))
+            return True
         try:
             runWithWarningsSuppressed(suppress, method)
         except SkipTest as e:

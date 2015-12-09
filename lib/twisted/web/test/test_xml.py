@@ -25,7 +25,7 @@ class Sux0r(sux.XMLParser):
     def gotText(self, text):
         self.tokens.append(("text", text))
 
-class SUXTest(TestCase):
+class SUXTests(TestCase):
 
     def testBork(self):
         s = "<bork><bork><bork>"
@@ -35,7 +35,7 @@ class SUXTest(TestCase):
         self.assertEqual(len(ms.getTagStarts()),3)
 
 
-class MicroDOMTest(TestCase):
+class MicroDOMTests(TestCase):
 
     def test_leadingTextDropping(self):
         """
@@ -486,21 +486,6 @@ alert("I hate you");
         actual = d.documentElement.toxml()
         self.assertEqual(expected, actual)
 
-    def testLaterCloserTable(self):
-        s = ("<table>"
-             "<tr><th>name<th>value<th>comment"
-             "<tr><th>this<td>tag<td>soup"
-             "<tr><th>must<td>be<td>handled"
-             "</table>")
-        expected = ("<table>"
-                    "<tr><th>name</th><th>value</th><th>comment</th></tr>"
-                    "<tr><th>this</th><td>tag</td><td>soup</td></tr>"
-                    "<tr><th>must</th><td>be</td><td>handled</td></tr>"
-                    "</table>")
-        d = microdom.parseString(s, beExtremelyLenient=1)
-        actual = d.documentElement.toxml()
-        self.assertEqual(expected, actual)
-    testLaterCloserTable.todo = "Table parsing needs to be fixed."
 
     def testLaterCloserDL(self):
         s = ("<dl>"
@@ -515,20 +500,6 @@ alert("I hate you");
         actual = d.documentElement.toxml()
         self.assertEqual(expected, actual)
 
-    def testLaterCloserDL2(self):
-        s = ("<dl>"
-             "<dt>word<dd>definition<p>more definition"
-             "<dt>word"
-             "</dl>")
-        expected = ("<dl>"
-                    "<dt>word</dt><dd>definition<p>more definition</p></dd>"
-                    "<dt>word</dt>"
-                    "</dl>")
-        d = microdom.parseString(s, beExtremelyLenient=1)
-        actual = d.documentElement.toxml()
-        self.assertEqual(expected, actual)
-
-    testLaterCloserDL2.todo = "unclosed <p> messes it up."
 
     def testUnicodeTolerance(self):
         import struct
@@ -620,9 +591,14 @@ alert("I hate you");
         s = '<p>foo<b a="c"><foo z="foo"></foo><foo></foo><bar c="y"></bar></b></p>'
         self.assertEqual(s, n.toxml())
 
+
     def testDict(self):
+        """
+        Returns a dictionary which is hashable.
+        """
         n = microdom.Element("p")
-        d = {n : 1} # will fail if Element is unhashable
+        hash(n)
+
 
     def testEscaping(self):
         # issue 590
@@ -787,7 +763,7 @@ alert("I hate you");
 
 
 
-class TestBrokenHTML(TestCase):
+class BrokenHTMLTests(TestCase):
     """
     Tests for when microdom encounters very bad HTML and C{beExtremelyLenient}
     is enabled. These tests are inspired by some HTML generated in by a mailer,
@@ -811,7 +787,7 @@ class TestBrokenHTML(TestCase):
         The important thing is that it doesn't raise an exception.
         """
         input = '<body><h1><div al!\n ign="center">Foo</div></h1></body>'
-        expected = ('<body><h1><div ign="center" al="True">'
+        expected = ('<body><h1><div al="True" ign="center">'
                     'Foo</div></h1></body>')
         self.checkParsed(input, expected)
 

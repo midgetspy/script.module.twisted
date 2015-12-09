@@ -4,15 +4,22 @@
 # Maintainer: Jonathan Lange
 # Author: Robert Collins
 
+from __future__ import absolute_import, division
 
-import StringIO, os, pdb, sys
-from zope.interface import implements
+import os
+import pdb
+import sys
+
+from zope.interface import implementer
 from zope.interface.verify import verifyObject
 
 from twisted.trial.itrial import IReporter, ITestCase
 from twisted.trial import unittest, runner, reporter, util
+from twisted.trial._asyncrunner import _ForceGarbageCollectionDecorator
 from twisted.python import failure, log, reflect
 from twisted.python.filepath import FilePath
+from twisted.python.reflect import namedAny
+from twisted.python.compat import NativeStringIO
 from twisted.scripts import trial
 from twisted.plugins import twisted_trial
 from twisted import plugin
@@ -33,12 +40,11 @@ class CapturingDebugger(object):
 
 
 
+@implementer(IReporter)
 class CapturingReporter(object):
     """
     Reporter that keeps a log of all actions performed on it.
     """
-
-    implements(IReporter)
 
     stream = None
     tbformat = None
@@ -154,15 +160,15 @@ class TrialRunnerTestsMixin:
 
 
 
-class TestTrialRunner(TrialRunnerTestsMixin, unittest.SynchronousTestCase):
+class TrialRunnerTests(TrialRunnerTestsMixin, unittest.SynchronousTestCase):
     """
     Tests for L{runner.TrialRunner} with the feature to turn unclean errors
     into warnings disabled.
     """
     def setUp(self):
-        self.stream = StringIO.StringIO()
+        self.stream = NativeStringIO()
         self.runner = runner.TrialRunner(CapturingReporter, stream=self.stream)
-        self.test = TestTrialRunner('test_empty')
+        self.test = TrialRunnerTests('test_empty')
 
 
     def test_publisher(self):
@@ -175,18 +181,18 @@ class TestTrialRunner(TrialRunnerTestsMixin, unittest.SynchronousTestCase):
 
 
 
-class TrialRunnerWithUncleanWarningsReporter(TrialRunnerTestsMixin,
-                                             unittest.SynchronousTestCase):
+class TrialRunnerWithUncleanWarningsReporterTests(TrialRunnerTestsMixin,
+                                                  unittest.SynchronousTestCase):
     """
     Tests for the TrialRunner's interaction with an unclean-error suppressing
     reporter.
     """
 
     def setUp(self):
-        self.stream = StringIO.StringIO()
+        self.stream = NativeStringIO()
         self.runner = runner.TrialRunner(CapturingReporter, stream=self.stream,
                                          uncleanWarnings=True)
-        self.test = TestTrialRunner('test_empty')
+        self.test = TrialRunnerTests('test_empty')
 
 
 
@@ -198,7 +204,7 @@ class DryRunMixin(object):
 
     def setUp(self):
         self.log = []
-        self.stream = StringIO.StringIO()
+        self.stream = NativeStringIO()
         self.runner = runner.TrialRunner(CapturingReporter,
                                          runner.TrialRunner.DRY_RUN,
                                          stream=self.stream)
@@ -239,7 +245,7 @@ class DryRunMixin(object):
 
 
 
-class SynchronousDryRunTest(DryRunMixin, unittest.SynchronousTestCase):
+class SynchronousDryRunTests(DryRunMixin, unittest.SynchronousTestCase):
     """
     Check that 'dry run' mode works well with trial's L{SynchronousTestCase}.
     """
@@ -252,7 +258,7 @@ class SynchronousDryRunTest(DryRunMixin, unittest.SynchronousTestCase):
 
 
 
-class DryRunTest(DryRunMixin, unittest.SynchronousTestCase):
+class DryRunTests(DryRunMixin, unittest.SynchronousTestCase):
     """
     Check that 'dry run' mode works well with Trial tests.
     """
@@ -265,7 +271,7 @@ class DryRunTest(DryRunMixin, unittest.SynchronousTestCase):
 
 
 
-class PyUnitDryRunTest(DryRunMixin, unittest.SynchronousTestCase):
+class PyUnitDryRunTests(DryRunMixin, unittest.SynchronousTestCase):
     """
     Check that 'dry run' mode works well with stdlib unittest tests.
     """
@@ -278,7 +284,7 @@ class PyUnitDryRunTest(DryRunMixin, unittest.SynchronousTestCase):
 
 
 
-class TestRunner(unittest.SynchronousTestCase):
+class RunnerTests(unittest.SynchronousTestCase):
     def setUp(self):
         self.config = trial.Options()
         # whitebox hack a reporter in, because plugins are CACHED and will
@@ -327,7 +333,7 @@ class TestRunner(unittest.SynchronousTestCase):
 
     def getRunner(self):
         r = trial._makeRunner(self.config)
-        r.stream = StringIO.StringIO()
+        r.stream = NativeStringIO()
         # XXX The runner should always take care of cleaning this up itself.
         # It's not clear why this is necessary.  The runner always tears down
         # its log file.
@@ -360,7 +366,7 @@ class TestRunner(unittest.SynchronousTestCase):
         """
         By default Trial sets the 'uncleanWarnings' option on the runner to
         False. This means that dirty reactor errors will be reported as
-        errors. See L{test_reporter.TestDirtyReactor}.
+        errors. See L{test_reporter.DirtyReactorTests}.
         """
         self.parseOptions([])
         runner = self.getRunner()
@@ -372,7 +378,7 @@ class TestRunner(unittest.SynchronousTestCase):
         """
         Specifying '--unclean-warnings' on the trial command line will cause
         reporters to be wrapped in a device which converts unclean errors to
-        warnings.  See L{test_reporter.TestDirtyReactor} for implications.
+        warnings.  See L{test_reporter.DirtyReactorTests} for implications.
         """
         self.parseOptions(['--unclean-warnings'])
         runner = self.getRunner()
@@ -524,7 +530,7 @@ class TestRunner(unittest.SynchronousTestCase):
 
     def test_runnerDebuggerWithExplicitlyPassedPdb(self):
         """
-        Trial uses pdb if pdb is passed explicity to the `--debugger` arg.
+        Trial uses pdb if pdb is passed explicitly to the `--debugger` arg.
         """
         self.parseOptions([
             '--reporter', 'capturing',
@@ -552,7 +558,7 @@ class TestRunner(unittest.SynchronousTestCase):
         self.parseOptions([
             '--reporter', 'capturing',
             '--debugger',
-            'twisted.trial.test.test_runner.TestRunner.cdebugger',
+            'twisted.trial.test.test_runner.RunnerTests.cdebugger',
             '--debug',
             'twisted.trial.test.sample',
         ])
@@ -574,16 +580,15 @@ class TestRunner(unittest.SynchronousTestCase):
 
 
 
-class TestTrialSuite(unittest.SynchronousTestCase):
+class TrialSuiteTests(unittest.SynchronousTestCase):
 
     def test_imports(self):
         # FIXME, HTF do you test the reactor can be cleaned up ?!!!
-        from twisted.trial.runner import TrialSuite
+        namedAny('twisted.trial.runner.TrialSuite')
 
 
 
-
-class TestUntilFailure(unittest.SynchronousTestCase):
+class UntilFailureTests(unittest.SynchronousTestCase):
     class FailAfter(pyunit.TestCase):
         """
         A test case that fails when run 3 times in a row.
@@ -596,9 +601,9 @@ class TestUntilFailure(unittest.SynchronousTestCase):
 
 
     def setUp(self):
-        TestUntilFailure.FailAfter.count = []
-        self.test = TestUntilFailure.FailAfter('test_foo')
-        self.stream = StringIO.StringIO()
+        UntilFailureTests.FailAfter.count = []
+        self.test = UntilFailureTests.FailAfter('test_foo')
+        self.stream = NativeStringIO()
         self.runner = runner.TrialRunner(reporter.Reporter, stream=self.stream)
 
 
@@ -654,18 +659,18 @@ class TestUntilFailure(unittest.SynchronousTestCase):
         self.assertEqual(len(decorated), 2)
         self.assertEqual(decorated,
             [(self.test, ITestCase),
-             (self.test, unittest._ForceGarbageCollectionDecorator)])
+             (self.test, _ForceGarbageCollectionDecorator)])
 
 
 
-class UncleanUntilFailureTests(TestUntilFailure):
+class UncleanUntilFailureTests(UntilFailureTests):
     """
     Test that the run-until-failure feature works correctly with the unclean
     error suppressor.
     """
 
     def setUp(self):
-        TestUntilFailure.setUp(self)
+        UntilFailureTests.setUp(self)
         self.runner = runner.TrialRunner(reporter.Reporter, stream=self.stream,
                                          uncleanWarnings=True)
 
@@ -691,7 +696,7 @@ class BreakingSuite(runner.TestSuite):
 
 
 
-class TestLoggedErrors(unittest.SynchronousTestCase):
+class LoggedErrorsTests(unittest.SynchronousTestCase):
     """
     It is possible for an error generated by a test to be logged I{outside} of
     any test. The log observers constructed by L{TestCase} won't catch these
@@ -725,7 +730,7 @@ class TestLoggedErrors(unittest.SynchronousTestCase):
 
 
 
-class TestTestHolder(unittest.SynchronousTestCase):
+class TestHolderTests(unittest.SynchronousTestCase):
 
     def setUp(self):
         self.description = "description"
@@ -843,7 +848,7 @@ class ErrorHolderTestsMixin(object):
 
 
 
-class FailureHoldingErrorHolderTests(ErrorHolderTestsMixin, TestTestHolder):
+class FailureHoldingErrorHolderTests(ErrorHolderTestsMixin, TestHolderTests):
     """
     Tests for L{runner.ErrorHolder} behaving similarly to L{runner.TestHolder}
     when constructed with a L{Failure} representing its error.
@@ -860,7 +865,7 @@ class FailureHoldingErrorHolderTests(ErrorHolderTestsMixin, TestTestHolder):
 
 
 
-class ExcInfoHoldingErrorHolderTests(ErrorHolderTestsMixin, TestTestHolder):
+class ExcInfoHoldingErrorHolderTests(ErrorHolderTestsMixin, TestHolderTests):
     """
     Tests for L{runner.ErrorHolder} behaving similarly to L{runner.TestHolder}
     when constructed with a C{exc_info}-style tuple representing its error.
@@ -878,7 +883,7 @@ class ExcInfoHoldingErrorHolderTests(ErrorHolderTestsMixin, TestTestHolder):
 
 
 
-class TestMalformedMethod(unittest.SynchronousTestCase):
+class MalformedMethodTests(unittest.SynchronousTestCase):
     """
     Test that trial manages when test methods don't have correct signatures.
     """
@@ -890,15 +895,15 @@ class TestMalformedMethod(unittest.SynchronousTestCase):
             pass
         def test_bar():
             pass
-        test_spam = defer.deferredGenerator(test_bar)
+        test_spam = defer.inlineCallbacks(test_bar)
 
     def _test(self, method):
         """
         Wrapper for one of the test method of L{ContainMalformed}.
         """
-        stream = StringIO.StringIO()
+        stream = NativeStringIO()
         trialRunner = runner.TrialRunner(reporter.Reporter, stream=stream)
-        test = TestMalformedMethod.ContainMalformed(method)
+        test = MalformedMethodTests.ContainMalformed(method)
         result = trialRunner.run(test)
         self.assertEqual(result.testsRun, 1)
         self.failIf(result.wasSuccessful())
@@ -924,7 +929,7 @@ class TestMalformedMethod(unittest.SynchronousTestCase):
 
 
 
-class DestructiveTestSuiteTestCase(unittest.SynchronousTestCase):
+class DestructiveTestSuiteTests(unittest.SynchronousTestCase):
     """
     Test for L{runner.DestructiveTestSuite}.
     """
@@ -987,7 +992,7 @@ class DestructiveTestSuiteTestCase(unittest.SynchronousTestCase):
 
 
 
-class TestRunnerDeprecation(unittest.SynchronousTestCase):
+class RunnerDeprecationTests(unittest.SynchronousTestCase):
 
     class FakeReporter(reporter.Reporter):
         """
@@ -1033,19 +1038,20 @@ class TestRunnerDeprecation(unittest.SynchronousTestCase):
 
 
 
-class DryRunVisitorDeprecation(unittest.TestCase):
+class QualifiedNameWalkerTests(unittest.SynchronousTestCase):
     """
-    Test for L{DryRunVisitor}
+    Tests for L{twisted.trial.runner._qualNameWalker}.
     """
 
-    def test_deprecated(self):
+    def test_walksDownPath(self):
         """
-        L{DryRunVisitor} is deprecated.
+        C{_qualNameWalker} is a generator that, when given a Python qualified
+        name, yields that name, and then the parent of that name, and so forth,
+        along with a list of the tried components, in a 2-tuple.
         """
-        runner.DryRunVisitor
-        warningsShown = self.flushWarnings([self.test_deprecated])
-        self.assertEqual(1, len(warningsShown))
-        self.assertEqual(
-                "twisted.trial.runner.DryRunVisitor was deprecated in "
-                "Twisted 13.0.0: Trial no longer has support for visitors",
-                warningsShown[0]['message'])
+        walkerResults = list(runner._qualNameWalker("walker.texas.ranger"))
+
+        self.assertEqual(walkerResults,
+                         [("walker.texas.ranger", []),
+                          ("walker.texas", ["ranger"]),
+                          ("walker", ["texas", "ranger"])])

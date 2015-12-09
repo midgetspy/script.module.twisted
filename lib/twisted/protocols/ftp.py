@@ -10,11 +10,9 @@ An FTP protocol implementation
 import os
 import time
 import re
-import operator
 import stat
 import errno
 import fnmatch
-import warnings
 
 try:
     import pwd, grp
@@ -29,7 +27,6 @@ from twisted.internet import reactor, interfaces, protocol, error, defer
 from twisted.protocols import basic, policies
 
 from twisted.python import log, failure, filepath
-from twisted.python.compat import reduce
 
 from twisted.cred import error as cred_error, portal, credentials, checkers
 
@@ -427,9 +424,23 @@ class DTP(object, protocol.Protocol):
 
 
     def _formatOneListResponse(self, name, size, directory, permissions, hardlinks, modified, owner, group):
-        def formatMode(mode):
-            return ''.join([mode & (256 >> n) and 'rwx'[n % 3] or '-' for n in range(9)])
+        """
+        Helper method to format one entry's info into a text entry like:
+        'drwxrwxrwx   0 user   group   0 Jan 01  1970 filename.txt'
 
+        @param name: C{str} name of the entry (file or directory or link)
+        @param size: C{int} size of the entry
+        @param directory: evals to C{bool} - whether the entry is a directory
+        @param permissions: L{twisted.python.filepath.Permissions} object
+            representing that entry's permissions
+        @param hardlinks: C{int} number of hardlinks
+        @param modified: C{float} - entry's last modified time in seconds
+            since the epoch
+        @param owner: C{str} username of the owner
+        @param group: C{str} group name of the owner
+
+        @return: C{str} in the requisite format
+        """
         def formatDate(mtime):
             now = time.gmtime()
             info = {
@@ -450,13 +461,14 @@ class DTP(object, protocol.Protocol):
 
         return format % {
             'directory': directory and 'd' or '-',
-            'permissions': formatMode(permissions),
+            'permissions': permissions.shorthand(),
             'hardlinks': hardlinks,
             'owner': owner[:8],
             'group': group[:8],
             'size': size,
             'date': formatDate(time.gmtime(modified)),
             'name': name}
+
 
     def sendListResponse(self, name, response):
         self.sendLine(self._formatOneListResponse(name, *response))
@@ -1793,7 +1805,7 @@ class FTPAnonymousShell(object):
 
 
     def _path(self, path):
-        return reduce(filepath.FilePath.child, path, self.filesystemRoot)
+        return self.filesystemRoot.descendant(path)
 
 
     def makeDirectory(self, path):
@@ -1930,34 +1942,115 @@ class FTPAnonymousShell(object):
         @type keys: C{iterable}
         """
         filePath.restat()
-        return [getattr(self, '_stat_' + k)(filePath.statinfo) for k in keys]
-
-    _stat_size = operator.attrgetter('st_size')
-    _stat_permissions = operator.attrgetter('st_mode')
-    _stat_hardlinks = operator.attrgetter('st_nlink')
-    _stat_modified = operator.attrgetter('st_mtime')
+        return [getattr(self, '_stat_' + k)(filePath) for k in keys]
 
 
-    def _stat_owner(self, st):
-        if pwd is not None:
-            try:
-                return pwd.getpwuid(st.st_uid)[0]
-            except KeyError:
-                pass
-        return str(st.st_uid)
+    def _stat_size(self, fp):
+        """
+        Get the filepath's size as an int
+
+        @param fp: L{twisted.python.filepath.FilePath}
+        @return: C{int} representing the size
+        """
+        return fp.getsize()
 
 
-    def _stat_group(self, st):
-        if grp is not None:
-            try:
-                return grp.getgrgid(st.st_gid)[0]
-            except KeyError:
-                pass
-        return str(st.st_gid)
+    def _stat_permissions(self, fp):
+        """
+        Get the filepath's permissions object
+
+        @param fp: L{twisted.python.filepath.FilePath}
+        @return: L{twisted.python.filepath.Permissions} of C{fp}
+        """
+        return fp.getPermissions()
 
 
-    def _stat_directory(self, st):
-        return bool(st.st_mode & stat.S_IFDIR)
+    def _stat_hardlinks(self, fp):
+        """
+        Get the number of hardlinks for the filepath - if the number of
+        hardlinks is not yet implemented (say in Windows), just return 0 since
+        stat-ing a file in Windows seems to return C{st_nlink=0}.
+
+        (Reference:
+        U{http://stackoverflow.com/questions/5275731/os-stat-on-windows})
+
+        @param fp: L{twisted.python.filepath.FilePath}
+        @return: C{int} representing the number of hardlinks
+        """
+        try:
+            return fp.getNumberOfHardLinks()
+        except NotImplementedError:
+            return 0
+
+
+    def _stat_modified(self, fp):
+        """
+        Get the filepath's last modified date
+
+        @param fp: L{twisted.python.filepath.FilePath}
+        @return: C{int} as seconds since the epoch
+        """
+        return fp.getModificationTime()
+
+
+    def _stat_owner(self, fp):
+        """
+        Get the filepath's owner's username.  If this is not implemented
+        (say in Windows) return the string "0" since stat-ing a file in
+        Windows seems to return C{st_uid=0}.
+
+        (Reference:
+        U{http://stackoverflow.com/questions/5275731/os-stat-on-windows})
+
+        @param fp: L{twisted.python.filepath.FilePath}
+        @return: C{str} representing the owner's username
+        """
+        try:
+            userID = fp.getUserID()
+        except NotImplementedError:
+            return "0"
+        else:
+            if pwd is not None:
+                try:
+                    return pwd.getpwuid(userID)[0]
+                except KeyError:
+                    pass
+            return str(userID)
+
+
+    def _stat_group(self, fp):
+        """
+        Get the filepath's owner's group.  If this is not implemented
+        (say in Windows) return the string "0" since stat-ing a file in
+        Windows seems to return C{st_gid=0}.
+
+        (Reference:
+        U{http://stackoverflow.com/questions/5275731/os-stat-on-windows})
+
+        @param fp: L{twisted.python.filepath.FilePath}
+        @return: C{str} representing the owner's group
+        """
+        try:
+            groupID = fp.getGroupID()
+        except NotImplementedError:
+            return "0"
+        else:
+            if grp is not None:
+                try:
+                    return grp.getgrgid(groupID)[0]
+                except KeyError:
+                    pass
+            return str(groupID)
+
+
+    def _stat_directory(self, fp):
+        """
+        Get whether the filepath is a directory
+
+        @param fp: L{twisted.python.filepath.FilePath}
+        @return: C{bool}
+        """
+        return fp.isdir()
 
 
 
@@ -2872,36 +2965,11 @@ class FTPClient(FTPClientBasic):
 
     def cwd(self, path):
         """
-        Issues the CWD (Change Working Directory) command. It's also
-        available as changeDirectory, which parses the result.
+        Issues the CWD (Change Working Directory) command.
 
         @return: a L{Deferred} that will be called when done.
         """
         return self.queueStringCommand('CWD ' + self.escapePath(path))
-
-
-    def changeDirectory(self, path):
-        """
-        Change the directory on the server and parse the result to determine
-        if it was successful or not.
-
-        @type path: C{str}
-        @param path: The path to which to change.
-
-        @return: a L{Deferred} which will be called back when the directory
-            change has succeeded or errbacked if an error occurrs.
-        """
-        warnings.warn(
-            "FTPClient.changeDirectory is deprecated in Twisted 8.2 and "
-            "newer.  Use FTPClient.cwd instead.",
-            category=DeprecationWarning,
-            stacklevel=2)
-
-        def cbResult(result):
-            if result[-1][:3] != '250':
-                return failure.Failure(CommandFailed(result))
-            return True
-        return self.cwd(path).addCallback(cbResult)
 
 
     def makeDirectory(self, path):

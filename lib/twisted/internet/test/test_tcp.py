@@ -18,6 +18,7 @@ from functools import wraps
 from zope.interface import implementer
 from zope.interface.verify import verifyClass
 
+from twisted.python.compat import long
 from twisted.python.runtime import platform
 from twisted.python.failure import Failure
 from twisted.python import log
@@ -25,13 +26,13 @@ from twisted.python import log
 from twisted.trial.unittest import SkipTest, TestCase
 from twisted.internet.error import (
     ConnectionLost, UserError, ConnectionRefusedError, ConnectionDone,
-    ConnectionAborted, DNSLookupError)
+    ConnectionAborted, DNSLookupError, NoProtocol)
 from twisted.internet.test.connectionmixins import (
     LogObserverMixin, ConnectionTestsMixin, StreamClientTestsMixin,
     findFreePort, ConnectableProtocol, EndpointCreator,
     runProtocolsWithReactor, Stop, BrokenContextFactory)
 from twisted.internet.test.reactormixins import (
-    ReactorBuilder, needsRunningReactor)
+    ReactorBuilder, needsRunningReactor, stopOnError)
 from twisted.internet.interfaces import (
     ILoggingContext, IConnector, IReactorFDSet, IReactorSocket, IReactorTCP,
     IResolverSimple, ITLSTransport)
@@ -178,7 +179,7 @@ class FakeSocket(object):
 
 
 
-class TestFakeSocket(TestCase):
+class FakeSocketTests(TestCase):
     """
     Test that the FakeSocket can be used by the doRead method of L{Connection}
     """
@@ -225,11 +226,11 @@ class _FakeFDSetReactor(object):
     An in-memory implementation of L{IReactorFDSet}, which records the current
     sets of active L{IReadDescriptor} and L{IWriteDescriptor}s.
 
-    @ivar _readers: The set of of L{IReadDescriptor}s active on this
+    @ivar _readers: The set of L{IReadDescriptor}s active on this
         L{_FakeFDSetReactor}
     @type _readers: L{set}
 
-    @ivar _writers: The set of of L{IWriteDescriptor}s active on this
+    @ivar _writers: The set of L{IWriteDescriptor}s active on this
         L{_FakeFDSetReactor}
     @ivar _writers: L{set}
     """
@@ -299,7 +300,7 @@ class TCPServerTests(TestCase):
         self.assertEqual(self.skt.sendBuffer, [])
 
 
-    def test_writeAfteDisconnectAfterTLS(self):
+    def test_writeAfterDisconnectAfterTLS(self):
         """
         L{Server.write} discards bytes passed to it if called after it has lost
         its connection when the connection had started TLS.
@@ -319,7 +320,7 @@ class TCPServerTests(TestCase):
         self.assertEqual(self.skt.sendBuffer, [])
 
 
-    def test_writeSequenceAfteDisconnectAfterTLS(self):
+    def test_writeSequenceAfterDisconnectAfterTLS(self):
         """
         L{Server.writeSequence} discards bytes passed to it if called after it
         has lost its connection when the connection had started TLS.
@@ -457,8 +458,9 @@ class TCPClientTestsBase(ReactorBuilder, ConnectionTestsMixin,
     due to some peculiar inheritance ordering concerns, but they are
     effectively abstract methods.
 
-    @ivar endpoints: A L{twisted.internet.test.reactormixins.EndpointCreator}
-      instance.
+    @ivar endpoints: A client/server endpoint creator appropriate to the
+        address family being tested.
+    @type endpoints: L{twisted.internet.test.connectionmixins.EndpointCreator}
 
     @ivar interface: An IP address literal to locally bind a socket to as well
         as to connect to.  This can be any valid interface for the local host.
@@ -538,11 +540,65 @@ class TCPClientTestsBase(ReactorBuilder, ConnectionTestsMixin,
         return reactor.connectTCP(self.interface, self.port, factory)
 
 
+    def test_buildProtocolReturnsNone(self):
+        """
+        When the factory's C{buildProtocol} returns C{None} the connection is
+        gracefully closed.
+        """
+        connectionLost = Deferred()
+        reactor = self.buildReactor()
+        serverFactory = MyServerFactory()
+        serverFactory.protocolConnectionLost = connectionLost
+
+        # Make sure the test ends quickly.
+        stopOnError(self, reactor)
+
+        class NoneFactory(ServerFactory):
+            def buildProtocol(self, address):
+                return None
+
+        listening = self.endpoints.server(reactor).listen(serverFactory)
+
+        def listened(port):
+            clientFactory = NoneFactory()
+            endpoint = self.endpoints.client(reactor, port.getHost())
+            return endpoint.connect(clientFactory)
+        connecting = listening.addCallback(listened)
+
+        def connectSucceeded(protocol):
+            self.fail(
+                "Stream client endpoint connect succeeded with %r, "
+                "should have failed with NoProtocol." % (protocol,))
+        def connectFailed(reason):
+            reason.trap(NoProtocol)
+        connecting.addCallbacks(connectSucceeded, connectFailed)
+
+        def connected(ignored):
+            # Now that the connection attempt has failed continue waiting for
+            # the server-side connection to be lost.  This is the behavior this
+            # test is primarily concerned with.
+            return connectionLost
+        disconnecting = connecting.addCallback(connected)
+
+        # Make sure any errors that happen in that process get logged quickly.
+        disconnecting.addErrback(log.err)
+
+        def disconnected(ignored):
+            # The Deferred has to succeed at this point (because log.err always
+            # returns None).  If an error got logged it will fail the test.
+            # Stop the reactor now so the test can complete one way or the
+            # other now.
+            reactor.stop()
+        disconnecting.addCallback(disconnected)
+
+        self.runReactor(reactor)
+
+
     def test_addresses(self):
         """
         A client's transport's C{getHost} and C{getPeer} return L{IPv4Address}
         instances which have the dotted-quad string form of the resolved
-        adddress of the local and remote endpoints of the connection
+        address of the local and remote endpoints of the connection
         respectively as their C{host} attribute, not the hostname originally
         passed in to
         L{connectTCP<twisted.internet.interfaces.IReactorTCP.connectTCP>}, if a
@@ -2401,7 +2457,7 @@ class AbortConnectionMixin(object):
 
 
 
-class AbortConnectionTestCase(ReactorBuilder, AbortConnectionMixin):
+class AbortConnectionTests(ReactorBuilder, AbortConnectionMixin):
     """
     TCP-specific L{AbortConnectionMixin} tests.
     """
@@ -2409,11 +2465,11 @@ class AbortConnectionTestCase(ReactorBuilder, AbortConnectionMixin):
 
     endpoints = TCPCreator()
 
-globals().update(AbortConnectionTestCase.makeTestCaseClasses())
+globals().update(AbortConnectionTests.makeTestCaseClasses())
 
 
 
-class SimpleUtilityTestCase(TestCase):
+class SimpleUtilityTests(TestCase):
     """
     Simple, direct tests for helpers within L{twisted.internet.tcp}.
     """
@@ -2458,8 +2514,8 @@ class SimpleUtilityTestCase(TestCase):
         # integers, because the whole point of getaddrinfo is that you can never
         # know a-priori know _anything_ about the network interfaces of the
         # computer that you're on and you have to ask it.
-        self.assertIsInstance(result[2], int) # flow info
-        self.assertIsInstance(result[3], int) # scope id
+        self.assertIsInstance(result[2], (int, long)) # flow info
+        self.assertIsInstance(result[3], (int, long)) # scope id
         # but, luckily, IP presentation format and what it means to be a port
         # number are a little better specified.
         self.assertEqual(result[:2], ("::1", 2))

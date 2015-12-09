@@ -7,7 +7,7 @@
 """Session Initialization Protocol.
 
 Documented in RFC 2543.
-[Superceded by 3261]
+[Superseded by 3261]
 
 
 This module contains a deprecated implementation of HTTP Digest authentication.
@@ -18,15 +18,15 @@ See L{twisted.cred.credentials} and L{twisted.cred._digest} for its new home.
 import socket, time, sys, random, warnings
 from hashlib import md5
 from zope.interface import implements, Interface
+from collections import OrderedDict
 
 # twisted imports
-from twisted.python import log, util
+from twisted.python import log
 from twisted.python.deprecate import deprecated
 from twisted.python.versions import Version
 from twisted.internet import protocol, defer, reactor
 
 from twisted import cred
-import twisted.cred.error
 from twisted.cred.credentials import UsernameHashedPassword, UsernamePassword
 
 
@@ -121,7 +121,7 @@ specialCases = {
 
 
 def dashCapitalize(s):
-    ''' Capitalize a string, making sure to treat - as a word seperator '''
+    ''' Capitalize a string, making sure to treat - as a word separator '''
     return '-'.join([ x.capitalize() for x in s.split('-')])
 
 def unq(s):
@@ -428,7 +428,7 @@ class URL:
 def parseURL(url, host=None, port=None):
     """Return string into URL object.
 
-    URIs are of of form 'sip:user@example.com'.
+    URIs are of form 'sip:user@example.com'.
     """
     d = {}
     if not url.startswith("sip:"):
@@ -540,7 +540,7 @@ class Message:
     length = None
 
     def __init__(self):
-        self.headers = util.OrderedDict() # map name to list of values
+        self.headers = OrderedDict() # map name to list of values
         self.body = ""
         self.finished = 0
 
@@ -936,7 +936,7 @@ class Proxy(Base):
         Default behaviour for OPTIONS and unknown methods for proxies
         is to forward message on to the client.
 
-        Since at the moment we are stateless proxy, thats basically
+        Since at the moment we are stateless proxy, that's basically
         everything.
         """
         def _mungContactHeader(uri, message):

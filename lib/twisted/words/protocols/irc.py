@@ -73,7 +73,15 @@ class IRCBadModes(ValueError):
 
 
 def parsemsg(s):
-    """Breaks a message from an IRC server into its prefix, command, and arguments.
+    """
+    Breaks a message from an IRC server into its prefix, command, and
+    arguments.
+
+    @param s: The message to break.
+    @type s: L{bytes}
+
+    @return: A tuple of (prefix, command, args).
+    @rtype: L{tuple}
     """
     prefix = ''
     trailing = []
@@ -253,7 +261,7 @@ class IRC(protocol.Protocol):
 
     def sendLine(self, line):
         if self.encoding is not None:
-            if isinstance(line, unicode):
+            if not isinstance(line, bytes):
                 line = line.encode(self.encoding)
         self.transport.write("%s%s%s" % (line, CR, LF))
 
@@ -265,6 +273,10 @@ class IRC(protocol.Protocol):
         First argument is the command, all subsequent arguments are parameters
         to that command.  If a prefix is desired, it may be specified with the
         keyword argument 'prefix'.
+
+        The L{sendCommand} method is generally preferred over this one.
+        Notably, this method does not support sending message tags, while the
+        L{sendCommand} method does.
         """
         if not command:
             raise ValueError("IRC message requires a command.")
@@ -283,6 +295,108 @@ class IRC(protocol.Protocol):
         if len(parameter_list) > 15:
             log.msg("Message has %d parameters (RFC allows 15):\n%s" %
                     (len(parameter_list), line))
+
+
+    def sendCommand(self, command, parameters, prefix=None, tags=None):
+        """
+        Send to the remote peer a line formatted as an IRC message.
+
+        @param command: The command or numeric to send.
+        @type command: L{unicode}
+
+        @param parameters: The parameters to send with the command.
+        @type parameters: A L{tuple} or L{list} of L{unicode} parameters
+
+        @param prefix: The prefix to send with the command.  If not
+            given, no prefix is sent.
+        @type prefix: L{unicode}
+
+        @param tags: A dict of message tags.  If not given, no message
+            tags are sent.  The dict key should be the name of the tag
+            to send as a string; the value should be the unescaped value
+            to send with the tag, or either None or "" if no value is to
+            be sent with the tag.
+        @type tags: L{dict} of tags (L{unicode}) => values (L{unicode})
+        @see: U{https://ircv3.net/specs/core/message-tags-3.2.html}
+        """
+        if not command:
+            raise ValueError("IRC message requires a command.")
+
+        if " " in command or command[0] == ":":
+            # Not the ONLY way to screw up, but provides a little
+            # sanity checking to catch likely dumb mistakes.
+            raise ValueError('Invalid command: "%s"' % (command,))
+
+        if tags is None:
+            tags = {}
+
+        line = " ".join([command] + list(parameters))
+        if prefix:
+            line = ":%s %s" % (prefix, line)
+        if tags:
+            tagStr = self._stringTags(tags)
+            line = "@%s %s" % (tagStr, line)
+        if self.encoding is None:
+            # Either pass bytes to sendLine, or have sendLine do the translation
+            line = line.encode("utf-8")
+        self.sendLine(line)
+
+        if len(parameters) > 15:
+            log.msg("Message has %d parameters (RFC allows 15):\n%s" %
+                    (len(parameters), line))
+
+
+    def _stringTags(self, tags):
+        """
+        Converts a tag dictionary to a string.
+
+        @param tags: The tag dict passed to sendMsg.
+
+        @rtype: L{unicode}
+        @return: IRCv3-format tag string
+        """
+        self._validateTags(tags)
+        tagStrings = []
+        for tag, value in tags.items():
+            if value:
+                tagStrings.append("%s=%s" % (tag, self._escapeTagValue(value)))
+            else:
+                tagStrings.append(tag)
+        return ";".join(tagStrings)
+
+
+    def _validateTags(self, tags):
+        """
+        Checks the tag dict for errors and raises L{ValueError} if an
+        error is found.
+
+        @param tags: The tag dict passed to sendMsg.
+        """
+        for tag, value in tags.items():
+            if not tag:
+                raise ValueError("A tag name is required.")
+            for char in tag:
+                if not char.isalnum() and char not in ("-", "/", "."):
+                    raise ValueError("Tag contains invalid characters.")
+
+
+    def _escapeTagValue(self, value):
+        """
+        Escape the given tag value according to U{escaping rules in IRCv3
+        <https://ircv3.net/specs/core/message-tags-3.2.html>}.
+
+        @param value: The string value to escape.
+        @type value: L{str}
+
+        @return: The escaped string for sending as a message value
+        @rtype: L{str}
+        """
+        return (value.replace("\\", "\\\\")
+            .replace(";", "\\:")
+            .replace(" ", "\\s")
+            .replace("\r", "\\r")
+            .replace("\n", "\\n")
+            )
 
 
     def dataReceived(self, data):
@@ -314,6 +428,16 @@ class IRC(protocol.Protocol):
         """
         Determine the function to call for the given command and call it with
         the given arguments.
+
+        @param command: The IRC command to determine the function for.
+        @type command: L{bytes}
+
+        @param prefix: The prefix of the IRC message (as returned by
+            L{parsemsg}).
+        @type prefix: L{bytes}
+
+        @param params: A list of parameters to call the function with.
+        @type params: L{list}
         """
         method = getattr(self, "irc_%s" % command, None)
         try:
@@ -349,7 +473,7 @@ class IRC(protocol.Protocol):
         @type message: C{str} or C{unicode}
         @param message: The message being sent.
         """
-        self.sendLine(":%s PRIVMSG %s :%s" % (sender, recip, lowQuote(message)))
+        self.sendCommand("PRIVMSG", (recip, ":%s" % (lowQuote(message),)), sender)
 
 
     def notice(self, sender, recip, message):
@@ -371,7 +495,7 @@ class IRC(protocol.Protocol):
         @type message: C{str} or C{unicode}
         @param message: The message being sent.
         """
-        self.sendLine(":%s NOTICE %s :%s" % (sender, recip, message))
+        self.sendCommand("NOTICE", (recip, ":%s" % (message,)), sender)
 
 
     def action(self, sender, recip, message):
@@ -397,7 +521,7 @@ class IRC(protocol.Protocol):
         Send the topic to a user.
 
         @type user: C{str} or C{unicode}
-        @param user: The user receiving the topic.  Only their nick name, not
+        @param user: The user receiving the topic.  Only their nickname, not
             the full hostmask.
 
         @type channel: C{str} or C{unicode}
@@ -429,7 +553,7 @@ class IRC(protocol.Protocol):
         This sends a 333 reply message, which is not part of the IRC RFC.
 
         @type user: C{str} or C{unicode}
-        @param user: The user receiving the topic.  Only their nick name, not
+        @param user: The user receiving the topic.  Only their nickname, not
             the full hostmask.
 
         @type channel: C{str} or C{unicode}
@@ -452,7 +576,7 @@ class IRC(protocol.Protocol):
         Send the names of a channel's participants to a user.
 
         @type user: C{str} or C{unicode}
-        @param user: The user receiving the name list.  Only their nick name,
+        @param user: The user receiving the name list.  Only their nickname,
             not the full hostmask.
 
         @type channel: C{str} or C{unicode}
@@ -489,7 +613,7 @@ class IRC(protocol.Protocol):
 
         @type user: C{str} or C{unicode}
         @param user: The user receiving this member information.  Only their
-            nick name, not the full hostmask.
+            nickname, not the full hostmask.
 
         @type channel: C{str} or C{unicode}
         @param channel: The channel for which this is the member information.
@@ -517,7 +641,7 @@ class IRC(protocol.Protocol):
         Send information about the state of a particular user.
 
         @type user: C{str} or C{unicode}
-        @param user: The user receiving this information.  Only their nick name,
+        @param user: The user receiving this information.  Only their nickname,
             not the full hostmask.
 
         @type nick: C{str} or C{unicode}
@@ -606,7 +730,7 @@ class IRC(protocol.Protocol):
         Send information about the mode of a channel.
 
         @type user: C{str} or C{unicode}
-        @param user: The user receiving the name list.  Only their nick name,
+        @param user: The user receiving the name list.  Only their nickname,
             not the full hostmask.
 
         @type channel: C{str} or C{unicode}
@@ -691,7 +815,7 @@ class ServerSupportedFeatures(_CommandDispatcherMixin):
         """
         def _unescape():
             parts = value.split('\\x')
-            # The first part can never be preceeded by the escape.
+            # The first part can never be preceded by the escape.
             yield parts.pop(0)
             for s in parts:
                 octet, rest = s[:2], s[2:]
@@ -1225,7 +1349,7 @@ class IRCClient(basic.LineReceiver):
 
     def luserChannels(self, channels):
         """
-        Called with the number of channels existant on the server.
+        Called with the number of channels existent on the server.
 
         @type channels: C{int}
         """
@@ -1321,7 +1445,7 @@ class IRCClient(basic.LineReceiver):
 
     def signedOn(self):
         """
-        Called after sucessfully signing on to the server.
+        Called after successfully signing on to the server.
         """
         pass
 
@@ -1390,7 +1514,7 @@ class IRCClient(basic.LineReceiver):
         """
         I received a message-of-the-day banner from the server.
 
-        motd is a list of strings, where each string was sent as a seperate
+        motd is a list of strings, where each string was sent as a separate
         message from the server. To display, you might want to use::
 
             '\\n'.join(motd)
@@ -1511,12 +1635,12 @@ class IRCClient(basic.LineReceiver):
         @type modes: C{str}
         @param modes: The mode flags to set on the user or channel.
         @type limit: C{int}
-        @param limit: In conjuction with the C{'l'} mode flag, limits the
+        @param limit: In conjunction with the C{'l'} mode flag, limits the
              number of users on the channel.
         @type user: C{str}
         @param user: The user to change the mode on.
         @type mask: C{str}
-        @param mask: In conjuction with the C{'b'} mode flag, sets a mask of
+        @param mask: In conjunction with the C{'b'} mode flag, sets a mask of
             users to be banned from the channel.
         """
         if set:
@@ -1648,10 +1772,10 @@ class IRCClient(basic.LineReceiver):
 
     def whois(self, nickname, server=None):
         """
-        Retrieve user information about the given nick name.
+        Retrieve user information about the given nickname.
 
         @type nickname: C{str}
-        @param nickname: The nick name about which to retrieve information.
+        @param nickname: The nickname about which to retrieve information.
 
         @since: 8.2
         """
@@ -1746,30 +1870,17 @@ class IRCClient(basic.LineReceiver):
 
 
     def dccSend(self, user, file):
-        if type(file) == types.StringType:
-            file = open(file, 'r')
+        """
+        This is supposed to send a user a file directly.  This generally
+        doesn't work on any client, and this method is included only for
+        backwards compatibility and completeness.
 
-        size = fileSize(file)
-
-        name = getattr(file, "name", "file@%s" % (id(file),))
-
-        factory = DccSendFactory(file)
-        port = reactor.listenTCP(0, factory, 1)
-
-        raise NotImplementedError,(
+        @param user: C{str} representing the user
+        @param file: an open file (unknown, since this is not implemented)
+        """
+        raise NotImplementedError(
             "XXX!!! Help!  I need to bind a socket, have it listen, and tell me its address.  "
             "(and stop accepting once we've made a single connection.)")
-
-        my_address = struct.pack("!I", my_address)
-
-        args = ['SEND', name, my_address, str(port)]
-
-        if not (size is None):
-            args.append(size)
-
-        args = ' '.join(args)
-
-        self.ctcpMakeQuery(user, [('DCC', args)])
 
 
     def dccResume(self, user, fileName, port, resumePos):
@@ -1896,7 +2007,7 @@ class IRCClient(basic.LineReceiver):
         try:
             added, removed = parseModes(modes, args, paramModes)
         except IRCBadModes:
-            log.err(None, 'An error occured while parsing the following '
+            log.err(None, 'An error occurred while parsing the following '
                           'MODE message: MODE %s' % (' '.join(params),))
         else:
             if added:
@@ -2166,18 +2277,18 @@ class IRCClient(basic.LineReceiver):
         """
         A master index of what CTCP tags this client knows.
 
-        If no arguments are provided, respond with a list of known tags.
+        If no arguments are provided, respond with a list of known tags, sorted
+        in alphabetical order.
         If an argument is provided, provide human-readable help on
         the usage of that tag.
         """
-
         nick = user.split('!')[0]
         if not data:
             # XXX: prefixedMethodNames gets methods from my *class*,
             # but it's entirely possible that this *instance* has more
             # methods.
-            names = reflect.prefixedMethodNames(self.__class__,
-                                                'ctcpQuery_')
+            names = sorted(reflect.prefixedMethodNames(self.__class__,
+                                                       'ctcpQuery_'))
 
             self.ctcpMakeReply(nick, [('CLIENTINFO', ' '.join(names))])
         else:
@@ -2210,7 +2321,17 @@ class IRCClient(basic.LineReceiver):
                              time.asctime(time.localtime(time.time())))])
 
     def ctcpQuery_DCC(self, user, channel, data):
-        """Initiate a Direct Client Connection
+        """
+        Initiate a Direct Client Connection
+
+        @param user: The hostmask of the user/client.
+        @type user: L{bytes}
+
+        @param channel: The name of the IRC channel.
+        @type channel: L{bytes}
+
+        @param data: The DCC request message.
+        @type data: L{bytes}
         """
 
         if not data: return
@@ -2308,28 +2429,68 @@ class IRCClient(basic.LineReceiver):
         Called when I receive a DCC SEND offer from a client.
 
         By default, I do nothing here.
+
+        @param user: The hostmask of the requesting user.
+        @type user: L{bytes}
+
+        @param address: The IP address of the requesting user.
+        @type address: L{bytes}
+
+        @param port: An integer representing the port of the requesting user.
+        @type port: L{int}
+
+        @param fileName: The name of the file to be transferred.
+        @type fileName: L{bytes}
+
+        @param size: The size of the file to be transferred, which may be C{-1}
+            if the size of the file was not specified in the DCC SEND request.
+        @type size: L{int}
+
+        @param data: A 3-list of [fileName, address, port].
+        @type data: L{list}
         """
-        ## filename = path.basename(arg)
-        ## protocol = DccFileReceive(filename, size,
-        ##                           (user,channel,data),self.dcc_destdir)
-        ## reactor.clientTCP(address, port, protocol)
-        ## self.dcc_sessions.append(protocol)
-        pass
 
 
     def dccDoResume(self, user, file, port, resumePos):
         """
-        Called when a client is trying to resume an offered file
-        via DCC send.  It should be either replied to with a DCC
-        ACCEPT or ignored (default).
+        Called when a client is trying to resume an offered file via DCC send.
+        It should be either replied to with a DCC ACCEPT or ignored (default).
+
+        @param user: The hostmask of the user who wants to resume the transfer
+            of a file previously offered via DCC send.
+        @type user: L{bytes}
+
+        @param file: The name of the file to resume the transfer of.
+        @type file: L{bytes}
+
+        @param port: An integer representing the port of the requesting user.
+        @type port: L{int}
+
+        @param resumePos: The position in the file from where the transfer
+            should resume.
+        @type resumePos: L{int}
         """
         pass
 
 
     def dccDoAcceptResume(self, user, file, port, resumePos):
         """
-        Called when a client has verified and accepted a DCC resume
-        request made by us.  By default it will do nothing.
+        Called when a client has verified and accepted a DCC resume request
+        made by us.  By default it will do nothing.
+
+        @param user: The hostmask of the user who has accepted the DCC resume
+            request.
+        @type user: L{bytes}
+
+        @param file: The name of the file to resume the transfer of.
+        @type file: L{bytes}
+
+        @param port: An integer representing the port of the accepting user.
+        @type port: L{int}
+
+        @param resumePos: The position in the file from where the transfer
+            should resume.
+        @type resumePos: L{int}
         """
         pass
 
@@ -2392,12 +2553,25 @@ class IRCClient(basic.LineReceiver):
         self.pong(user, time.time() - t0)
 
     def ctcpUnknownReply(self, user, channel, tag, data):
-        """Called when a fitting ctcpReply_ method is not found.
-
-        XXX: If the client makes arbitrary CTCP queries,
-        this method should probably show the responses to
-        them instead of treating them as anomolies.
         """
+        Called when a fitting ctcpReply_ method is not found.
+
+        @param user: The hostmask of the user.
+        @type user: L{bytes}
+
+        @param channel: The name of the IRC channel.
+        @type channel: L{bytes}
+
+        @param tag: The CTCP request tag for which no fitting method is found.
+        @type tag: L{bytes}
+
+        @param data: The CTCP message.
+        @type data: L{bytes}
+        """
+        # FIXME:7560:
+        # Add code for handling arbitrary queries and not treat them as
+        # anomalies.
+
         log.msg("Unknown CTCP reply from %s: %s %s\n"
                  % (user, tag, data))
 
@@ -2407,14 +2581,32 @@ class IRCClient(basic.LineReceiver):
     def badMessage(self, line, excType, excValue, tb):
         """
         When I get a message that's so broken I can't use it.
+
+        @param line: The indecipherable message.
+        @type line: L{bytes}
+
+        @param excType: The exception type of the exception raised by the
+            message.
+        @type excType: L{type}
+
+        @param excValue: The exception parameter of excType or its associated
+            value(the second argument to C{raise}).
+        @type excValue: L{BaseException}
+
+        @param tb: The Traceback as a traceback object.
+        @type tb: L{traceback}
         """
         log.msg(line)
         log.msg(''.join(traceback.format_exception(excType, excValue, tb)))
 
 
     def quirkyMessage(self, s):
-        """This is called when I receive a message which is peculiar,
-        but not wholly indecipherable.
+        """
+        This is called when I receive a message which is peculiar, but not
+        wholly indecipherable.
+
+        @param s: The peculiar message.
+        @type s: L{bytes}
         """
         log.msg(s + '\n')
 
@@ -2473,8 +2665,19 @@ class IRCClient(basic.LineReceiver):
 
 
     def handleCommand(self, command, prefix, params):
-        """Determine the function to call for the given command and call
-        it with the given arguments.
+        """
+        Determine the function to call for the given command and call it with
+        the given arguments.
+
+        @param command: The IRC command to determine the function for.
+        @type command: L{bytes}
+
+        @param prefix: The prefix of the IRC message (as returned by
+            L{parsemsg}).
+        @type prefix: L{bytes}
+
+        @param params: A list of parameters to call the function with.
+        @type params: L{list}
         """
         method = getattr(self, "irc_%s" % command, None)
         try:
@@ -2514,31 +2717,62 @@ def dccParseAddress(address):
 
 
 class DccFileReceiveBasic(protocol.Protocol, styles.Ephemeral):
-    """Bare protocol to receive a Direct Client Connection SEND stream.
+    """
+    Bare protocol to receive a Direct Client Connection SEND stream.
 
-    This does enough to keep the other guy talking, but you'll want to
-    extend my dataReceived method to *do* something with the data I get.
+    This does enough to keep the other guy talking, but you'll want to extend
+    my dataReceived method to *do* something with the data I get.
+
+    @ivar bytesReceived: An integer representing the number of bytes of data
+        received.
+    @type bytesReceived: L{int}
     """
 
     bytesReceived = 0
 
     def __init__(self, resumeOffset=0):
+        """
+        @param resumeOffset: An integer representing the amount of bytes from
+            where the transfer of data should be resumed.
+        @type resumeOffset: L{int}
+        """
         self.bytesReceived = resumeOffset
         self.resume = (resumeOffset != 0)
 
     def dataReceived(self, data):
-        """Called when data is received.
+        """
+        See: L{protocol.Protocol.dataReceived}
 
-        Warning: This just acknowledges to the remote host that the
-        data has been received; it doesn't *do* anything with the
-        data, so you'll want to override this.
+        Warning: This just acknowledges to the remote host that the data has
+        been received; it doesn't I{do} anything with the data, so you'll want
+        to override this.
         """
         self.bytesReceived = self.bytesReceived + len(data)
         self.transport.write(struct.pack('!i', self.bytesReceived))
 
 
 class DccSendProtocol(protocol.Protocol, styles.Ephemeral):
-    """Protocol for an outgoing Direct Client Connection SEND.
+    """
+    Protocol for an outgoing Direct Client Connection SEND.
+
+    @ivar blocksize: An integer representing the size of an individual block of
+        data.
+    @type blocksize: L{int}
+
+    @ivar file: The file to be sent.  This can be either a file object or
+        simply the name of the file.
+    @type file: L{file} or L{bytes}
+
+    @ivar bytesSent: An integer representing the number of bytes sent.
+    @type bytesSent: L{int}
+
+    @ivar completed: An integer representing whether the transfer has been
+        completed or not.
+    @type completed: L{int}
+
+    @ivar connected: An integer representing whether the connection has been
+        established or not.
+    @type connected: L{int}
     """
 
     blocksize = 1024
@@ -2602,7 +2836,15 @@ class DccSendFactory(protocol.Factory):
 
 
 def fileSize(file):
-    """I'll try my damndest to determine the size of this file object.
+    """
+    I'll try my damndest to determine the size of this file object.
+
+    @param file: The file object to determine the size of.
+    @type file: L{file}
+
+    @rtype: L{int} or L{None}
+    @return: The size of the file object as an integer if it can be determined,
+        otherwise return L{None}.
     """
     size = None
     if hasattr(file, "fileno"):
@@ -2638,7 +2880,8 @@ def fileSize(file):
     return size
 
 class DccChat(basic.LineReceiver, styles.Ephemeral):
-    """Direct Client Connection protocol type CHAT.
+    """
+    Direct Client Connection protocol type CHAT.
 
     DCC CHAT is really just your run o' the mill basic.LineReceiver
     protocol.  This class only varies from that slightly, accepting
@@ -2658,7 +2901,8 @@ class DccChat(basic.LineReceiver, styles.Ephemeral):
     buffer = ""
 
     def __init__(self, client, queryData=None):
-        """Initialize a new DCC CHAT session.
+        """
+        Initialize a new DCC CHAT session.
 
         queryData is a 3-tuple of
         (fromUser, targetUserOrChannel, data)
@@ -2713,7 +2957,14 @@ class DccChatFactory(protocol.ClientFactory):
 
 
 def dccDescribe(data):
-    """Given the data chunk from a DCC query, return a descriptive string.
+    """
+    Given the data chunk from a DCC query, return a descriptive string.
+
+    @param data: The data from a DCC query.
+    @type data: L{bytes}
+
+    @rtype: L{bytes}
+    @return: A descriptive string.
     """
 
     orig_data = data
@@ -2762,17 +3013,41 @@ def dccDescribe(data):
 
 
 class DccFileReceive(DccFileReceiveBasic):
-    """Higher-level coverage for getting a file from DCC SEND.
+    """
+    Higher-level coverage for getting a file from DCC SEND.
 
-    I allow you to change the file's name and destination directory.
-    I won't overwrite an existing file unless I've been told it's okay
-    to do so. If passed the resumeOffset keyword argument I will attempt to
-    resume the file from that amount of bytes.
+    I allow you to change the file's name and destination directory.  I won't
+    overwrite an existing file unless I've been told it's okay to do so.  If
+    passed the resumeOffset keyword argument I will attempt to resume the file
+    from that amount of bytes.
 
     XXX: I need to let the client know when I am finished.
     XXX: I need to decide how to keep a progress indicator updated.
     XXX: Client needs a way to tell me "Do not finish until I say so."
     XXX: I need to make sure the client understands if the file cannot be written.
+
+    @ivar filename: The name of the file to get.
+    @type filename: L{bytes}
+
+    @ivar fileSize: The size of the file to get, which has a default value of
+        C{-1} if the size of the file was not specified in the DCC SEND
+        request.
+    @type fileSize: L{int}
+
+    @ivar destDir: The destination directory for the file to be received.
+    @type destDir: L{bytes}
+
+    @ivar overwrite: An integer representing whether an existing file should be
+        overwritten or not.  This initially is an L{int} but can be modified to
+        be a L{bool} using the L{set_overwrite} method.
+    @type overwrite: L{int} or L{bool}
+
+    @ivar queryData: queryData is a 3-tuple of (user, channel, data).
+    @type queryData: L{tuple}
+
+    @ivar fromUser: This is the hostmask of the requesting user and is found at
+        index 0 of L{queryData}.
+    @type fromUser: L{bytes}
     """
 
     filename = 'dcc'
@@ -2788,15 +3063,21 @@ class DccFileReceive(DccFileReceiveBasic):
         self.filename = filename
         self.destDir = destDir
         self.fileSize = fileSize
+        self._resumeOffset = resumeOffset
 
         if queryData:
             self.queryData = queryData
             self.fromUser = self.queryData[0]
 
     def set_directory(self, directory):
-        """Set the directory where the downloaded file will be placed.
+        """
+        Set the directory where the downloaded file will be placed.
 
         May raise OSError if the supplied directory path is not suitable.
+
+        @param directory: The directory where the file to be received will be
+            placed.
+        @type directory: L{bytes}
         """
         if not path.exists(directory):
             raise OSError(errno.ENOENT, "You see no directory there.",
@@ -2812,14 +3093,23 @@ class DccFileReceive(DccFileReceiveBasic):
         self.destDir = directory
 
     def set_filename(self, filename):
-        """Change the name of the file being transferred.
+        """
+        Change the name of the file being transferred.
 
         This replaces the file name provided by the sender.
+
+        @param filename: The new name for the file.
+        @type filename: L{bytes}
         """
         self.filename = filename
 
     def set_overwrite(self, boolean):
-        """May I overwrite existing files?
+        """
+        May I overwrite existing files?
+
+        @param boolean: A boolean value representing whether existing files
+            should be overwritten or not.
+        @type boolean: L{bool}
         """
         self.overwrite = boolean
 
@@ -2832,9 +3122,16 @@ class DccFileReceive(DccFileReceiveBasic):
         if self.resume and exists:
             # I have been told I want to resume, and a file already
             # exists - Here we go
-            self.file = open(dst, 'ab')
+            self.file = open(dst, 'rb+')
+            self.file.seek(self._resumeOffset)
+            self.file.truncate()
             log.msg("Attempting to resume %s - starting from %d bytes" %
                     (self.file, self.file.tell()))
+        elif self.resume and not exists:
+            raise OSError(errno.ENOENT,
+                          "You cannot resume writing to a file "
+                          "that does not exist!",
+                          dst)
         elif self.overwrite or not exists:
             self.file = open(dst, 'wb')
         else:
@@ -2850,7 +3147,11 @@ class DccFileReceive(DccFileReceiveBasic):
         # XXX: update a progress indicator here?
 
     def connectionLost(self, reason):
-        """When the connection is lost, I close the file.
+        """
+        When the connection is lost, I close the file.
+
+        @param reason: The reason why the connection was lost.
+        @type reason: L{Failure}
         """
         self.connected = 0
         logmsg = ("%s closed." % (self,))

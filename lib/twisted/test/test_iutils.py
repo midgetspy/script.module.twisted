@@ -112,7 +112,6 @@ class ProcessUtilsTests(unittest.TestCase):
         stdout, the data written to the child's stderr, and the exit status of
         the child.
         """
-        exe = sys.executable
         scriptFile = self.makeSourceFile([
             "import sys",
             "sys.stdout.write('hello world!\\n')",
@@ -133,7 +132,7 @@ class ProcessUtilsTests(unittest.TestCase):
         """
         If the child process exits because of a signal, the L{Deferred}
         returned by L{getProcessOutputAndValue} fires a L{Failure} of a tuple
-        containing the the child's stdout, stderr, and the signal which caused
+        containing the child's stdout, stderr, and the signal which caused
         it to exit.
         """
         # Use SIGKILL here because it's guaranteed to be delivered. Using

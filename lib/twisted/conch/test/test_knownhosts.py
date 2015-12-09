@@ -8,16 +8,15 @@ Tests for L{twisted.conch.client.knownhosts}.
 import os
 from binascii import Error as BinasciiError, b2a_base64, a2b_base64
 
-try:
-    import Crypto
-    import pyasn1
-except ImportError:
-    skip = "PyCrypto and PyASN1 required for twisted.conch.knownhosts."
-else:
+from twisted.python.reflect import requireModule
+
+if requireModule('Crypto') and requireModule('pyasn1'):
     from twisted.conch.ssh.keys import Key, BadKeyError
     from twisted.conch.client.knownhosts import \
         PlainEntry, HashedEntry, KnownHostsFile, UnparsedEntry, ConsoleUI
     from twisted.conch.client import default
+else:
+    skip = "PyCrypto and PyASN1 required for twisted.conch.knownhosts."
 
 from zope.interface.verify import verifyObject
 
@@ -823,7 +822,7 @@ class KnownHostsDatabaseTests(TestCase):
 
     def test_verifyInvalidKey(self):
         """
-        Verfying an invalid key should return a L{Deferred} which fires with a
+        Verifying an invalid key should return a L{Deferred} which fires with a
         L{HostKeyChanged} failure.
         """
         hostsFile = self.loadSampleHostsFile()

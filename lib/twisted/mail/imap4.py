@@ -44,10 +44,8 @@ from twisted.internet.defer import maybeDeferred
 from twisted.python import log, text
 from twisted.internet import interfaces
 
-from twisted import cred
-import twisted.cred.error
-import twisted.cred.credentials
-
+from twisted.cred import credentials
+from twisted.cred.error import UnauthorizedLogin, UnhandledCredentials
 
 # locale-independent month names to use instead of strftime's
 _MONTH_NAMES = dict(zip(
@@ -118,7 +116,7 @@ class MessageSet(object):
             return self._last
 
         doc = '''
-            "Highest" message number, refered to by "*".
+            "Highest" message number, referred to by "*".
             Must be set before attempting to use the MessageSet.
         '''
         return _getLast, _setLast, None, doc
@@ -288,7 +286,7 @@ class LiteralString:
 
     def callback(self, line):
         """
-        Call defered with data and rest of line
+        Call deferred with data and rest of line
         """
         self.defer.callback((''.join(self.data), line))
 
@@ -319,7 +317,7 @@ class LiteralFile:
 
     def callback(self, line):
         """
-        Call defered with data and rest of line
+        Call deferred with data and rest of line
         """
         self.data.seek(0,0)
         self.defer.callback((self.data, line))
@@ -383,11 +381,11 @@ class Command:
         if unuse:
             unusedCallback(unuse)
 
-class LOGINCredentials(cred.credentials.UsernamePassword):
+class LOGINCredentials(credentials.UsernamePassword):
     def __init__(self):
         self.challenges = ['Password\0', 'User Name\0']
         self.responses = ['password', 'username']
-        cred.credentials.UsernamePassword.__init__(self, None, None)
+        credentials.UsernamePassword.__init__(self, None, None)
 
     def getChallenge(self):
         return self.challenges.pop()
@@ -398,9 +396,9 @@ class LOGINCredentials(cred.credentials.UsernamePassword):
     def moreChallenges(self):
         return bool(self.challenges)
 
-class PLAINCredentials(cred.credentials.UsernamePassword):
+class PLAINCredentials(credentials.UsernamePassword):
     def __init__(self):
-        cred.credentials.UsernamePassword.__init__(self, None, None)
+        credentials.UsernamePassword.__init__(self, None, None)
 
     def getChallenge(self):
         return ''
@@ -1017,9 +1015,9 @@ class IMAP4Server(basic.LineReceiver, policies.TimeoutMixin):
         self.setTimeout(self.POSTAUTH_TIMEOUT)
 
     def __ebAuthResp(self, failure, tag):
-        if failure.check(cred.error.UnauthorizedLogin):
+        if failure.check(UnauthorizedLogin):
             self.sendNegativeResponse(tag, 'Authentication failed: unauthorized')
-        elif failure.check(cred.error.UnhandledCredentials):
+        elif failure.check(UnhandledCredentials):
             self.sendNegativeResponse(tag, 'Authentication failed: server misconfigured')
         else:
             self.sendBadResponse(tag, 'Server error: login failed unexpectedly')
@@ -1073,10 +1071,10 @@ class IMAP4Server(basic.LineReceiver, policies.TimeoutMixin):
         """
         if self.portal:
             return self.portal.login(
-                cred.credentials.UsernamePassword(user, passwd),
+                credentials.UsernamePassword(user, passwd),
                 None, IAccount
             )
-        raise cred.error.UnauthorizedLogin()
+        raise UnauthorizedLogin()
 
     def __cbLogin(self, (iface, avatar, logout), tag):
         if iface is not IAccount:
@@ -1090,7 +1088,7 @@ class IMAP4Server(basic.LineReceiver, policies.TimeoutMixin):
             self.setTimeout(self.POSTAUTH_TIMEOUT)
 
     def __ebLogin(self, failure, tag):
-        if failure.check(cred.error.UnauthorizedLogin):
+        if failure.check(UnauthorizedLogin):
             self.sendNegativeResponse(tag, 'LOGIN failed')
         else:
             self.sendBadResponse(tag, 'Server error: ' + str(failure.value))
@@ -2112,8 +2110,6 @@ class IMAP4Server(basic.LineReceiver, policies.TimeoutMixin):
     def __cbCopy(self, messages, tag, mbox):
         # XXX - This should handle failures with a rollback or something
         addedDeferreds = []
-        addedIDs = []
-        failures = []
 
         fastCopyMbox = IMessageCopier(mbox, None)
         for (id, msg) in messages:
@@ -2919,7 +2915,7 @@ class IMAP4Client(basic.LineReceiver, policies.TimeoutMixin):
 
         See RFC 3501, section 6.3.1.
         """
-        # In the absense of specification, we are free to assume:
+        # In the absence of specification, we are free to assume:
         #   READ-WRITE access
         datum = {'READ-WRITE': rw}
         lines.append(parseNestedParens(tagline))
@@ -3107,7 +3103,7 @@ class IMAP4Client(basic.LineReceiver, policies.TimeoutMixin):
             C{'UNSEEN'}.
 
         @rtype: C{Deferred}
-        @return: A deferred which fires with with the status information if the
+        @return: A deferred which fires with the status information if the
             command is successful and whose errback is invoked otherwise.  The
             status information is in the form of a C{dict}.  Each element of
             C{names} is a key in the dictionary.  The value for each key is the
@@ -3581,7 +3577,7 @@ class IMAP4Client(basic.LineReceiver, policies.TimeoutMixin):
             with L{parseNestedParens} and extracting just the response data
             (that is, just the part that comes after C{"FETCH"}).  The form
             of this input (and therefore the output of this method) is very
-            disagreable.  A valuable improvement would be to enumerate the
+            disagreeable.  A valuable improvement would be to enumerate the
             possible keys (representing them as structured objects of some
             sort) rather than using strings and tuples of tuples of strings
             and so forth.  This would allow the keys to be documented more
@@ -3844,7 +3840,7 @@ class IMAP4Client(basic.LineReceiver, policies.TimeoutMixin):
 
         @rtype: C{Deferred}
         @return: A deferred whose callback is invoked with a list of the
-        the server's responses (C{[]} if C{silent} is true) or whose
+        server's responses (C{[]} if C{silent} is true) or whose
         errback is invoked if there is an error.
         """
         return self._store(str(messages), 'FLAGS', silent, flags, uid)
@@ -3870,7 +3866,7 @@ class IMAP4Client(basic.LineReceiver, policies.TimeoutMixin):
 
         @rtype: C{Deferred}
         @return: A deferred whose callback is invoked with a list of the
-        the server's responses (C{[]} if C{silent} is true) or whose
+        server's responses (C{[]} if C{silent} is true) or whose
         errback is invoked if there is an error.
         """
         return self._store(str(messages),'+FLAGS', silent, flags, uid)
@@ -3896,7 +3892,7 @@ class IMAP4Client(basic.LineReceiver, policies.TimeoutMixin):
 
         @rtype: C{Deferred}
         @return: A deferred whose callback is invoked with a list of the
-        the server's responses (C{[]} if C{silent} is true) or whose
+        server's responses (C{[]} if C{silent} is true) or whose
         errback is invoked if there is an error.
         """
         return self._store(str(messages), '-FLAGS', silent, flags, uid)
@@ -4835,8 +4831,8 @@ def statusRequestHelper(mbox, names):
 def parseAddr(addr):
     if addr is None:
         return [(None, None, None),]
-    addrs = email.Utils.getaddresses([addr])
-    return [[fn or None, None] + addr.split('@') for fn, addr in addrs]
+    addr = email.Utils.getaddresses([addr])
+    return [[fn or None, None] + address.split('@') for fn, address in addr]
 
 def getEnvelope(msg):
     headers = msg.getHeaders(True)

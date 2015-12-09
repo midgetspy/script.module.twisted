@@ -5,6 +5,7 @@
 Tests for L{twisted.words.protocols.irc}.
 """
 
+import errno
 import operator
 import time
 
@@ -14,6 +15,7 @@ from twisted.words.protocols import irc
 from twisted.words.protocols.irc import IRCClient, attributes as A
 from twisted.internet import protocol, task
 from twisted.test.proto_helpers import StringTransport, StringIOWithoutClosing
+from twisted.python.filepath import FilePath
 
 
 
@@ -498,7 +500,7 @@ stringSubjects = [
     ]
 
 
-class QuotingTest(unittest.TestCase):
+class QuotingTests(unittest.TestCase):
     def test_lowquoteSanity(self):
         """
         Testing client-server level quote/dequote.
@@ -634,7 +636,7 @@ class ServerSupportedFeatureTests(unittest.TestCase):
     def test_splitParamArgsProcessor(self):
         """
         L{ServerSupportedFeatures._splitParamArgs} uses the argument processor
-        passed to to convert ISUPPORT argument values to some more suitable
+        passed to convert ISUPPORT argument values to some more suitable
         form.
         """
         res = irc.ServerSupportedFeatures._splitParamArgs(['A:1', 'B:2', 'C'],
@@ -1009,7 +1011,7 @@ class IRCClientWithoutLogin(irc.IRCClient):
 
 
 
-class CTCPTest(unittest.TestCase):
+class CTCPTests(unittest.TestCase):
     """
     Tests for L{twisted.words.protocols.irc.IRCClient} CTCP handling.
     """
@@ -1623,7 +1625,7 @@ class ClientImplementationTests(unittest.TestCase):
 
 
 
-class BasicServerFunctionalityTestCase(unittest.TestCase):
+class BasicServerFunctionalityTests(unittest.TestCase):
     def setUp(self):
         self.f = StringIOWithoutClosing()
         self.t = protocol.FileWrapper(self.f)
@@ -1638,11 +1640,33 @@ class BasicServerFunctionalityTestCase(unittest.TestCase):
     def test_sendMessage(self):
         """
         Passing a command and parameters to L{IRC.sendMessage} results in a
-        query string that consists of the command and parameters, seperated by
+        query string that consists of the command and parameters, separated by
         a space, ending with '\r\n'.
         """
         self.p.sendMessage('CMD', 'param1', 'param2')
         self.check('CMD param1 param2\r\n')
+
+
+    def test_sendCommand(self):
+        """
+        Passing a command and parameters to L{IRC.sendCommand} results in a
+        query string that consists of the command and parameters, separated by
+        a space, ending with '\r\n'.
+
+        The format is described in more detail in
+        U{RFC 1459 <https://tools.ietf.org/html/rfc1459.html#section-2.3>}.
+        """
+        self.p.sendCommand(u"CMD", (u"param1", u"param2"))
+        self.check(b"CMD param1 param2\r\n")
+
+
+    def test_sendUnicodeCommand(self):
+        """
+        Passing unicode parameters to L{IRC.sendCommand} encodes the parameters
+        in UTF-8.
+        """
+        self.p.sendCommand(u"CMD", (u"param\u00b9", u"param\u00b2"))
+        self.check("CMD param\xc2\xb9 param\xc2\xb2\r\n")
 
 
     def test_sendMessageNoCommand(self):
@@ -1655,6 +1679,16 @@ class BasicServerFunctionalityTestCase(unittest.TestCase):
         self.assertEqual(str(error), "IRC message requires a command.")
 
 
+    def test_sendCommandNoCommand(self):
+        """
+        Passing C{None} as the command to L{IRC.sendCommand} raises a
+        C{ValueError}.
+        """
+        error = self.assertRaises(ValueError, self.p.sendCommand, None,
+            (u"param1", u"param2"))
+        self.assertEqual(error.args[0], "IRC message requires a command.")
+
+
     def test_sendMessageInvalidCommand(self):
         """
         Passing an invalid string command to L{IRC.sendMessage} raises a
@@ -1665,6 +1699,134 @@ class BasicServerFunctionalityTestCase(unittest.TestCase):
         self.assertEqual(str(error),
             "Somebody screwed up, 'cuz this doesn't look like a command to "
             "me:  ")
+
+
+    def test_sendCommandInvalidCommand(self):
+        """
+        Passing an invalid string command to L{IRC.sendCommand} raises a
+        C{ValueError}.
+        """
+        error = self.assertRaises(ValueError, self.p.sendCommand, u" ",
+            (u"param1", u"param2"))
+        self.assertEqual(error.args[0], 'Invalid command: " "')
+
+
+    def test_sendCommandWithPrefix(self):
+        """
+        Passing a command and parameters with a specified prefix to
+        L{IRC.sendCommand} results in a proper query string including the
+        specified line prefix.
+        """
+        self.p.sendCommand(u"CMD", (u"param1", u"param2"), u"irc.example.com")
+        self.check(b":irc.example.com CMD param1 param2\r\n")
+
+
+    def test_sendCommandWithTags(self):
+        """
+        Passing a command and parameters with a specified prefix and tags
+        to L{IRC.sendCommand} results in a proper query string including the
+        specified line prefix and appropriate tags syntax.  The query string
+        should be output as follows:
+        @tags :prefix COMMAND param1 param2\r\n
+        The tags are a string of IRCv3 tags, preceded by '@'.  The rest
+        of the string is as described in test_sendMessage.  For more on
+        the message tag format, see U{the IRCv3 specification
+        <https://ircv3.net/specs/core/message-tags-3.2.html>}.
+        """
+        sendTags = {
+            u"aaa": u"bbb",
+            u"ccc": None,
+            u"example.com/ddd": u"eee"
+        }
+        expectedTags = ("aaa=bbb", "ccc", "example.com/ddd=eee")
+        self.p.sendCommand(u"CMD", (u"param1", u"param2"), u"irc.example.com",
+            sendTags)
+        outMsg = self.f.getvalue()
+        outTagStr, outLine = outMsg.split(' ', 1)
+
+        # We pull off the leading '@' sign so that the split tags can be
+        # compared with what we expect.
+        outTags = outTagStr[1:].split(';')
+
+        self.assertEqual(outLine, b":irc.example.com CMD param1 param2\r\n")
+        self.assertEqual(sorted(expectedTags), sorted(outTags))
+
+
+    def test_sendCommandValidateEmptyTags(self):
+        """
+        Passing empty tag names to L{IRC.sendCommand} raises a C{ValueError}.
+        """
+        sendTags = {
+            u"aaa": u"bbb",
+            u"ccc": None,
+            u"": u""
+        }
+        error = self.assertRaises(ValueError, self.p.sendCommand, u"CMD",
+            (u"param1", u"param2"), u"irc.example.com", sendTags)
+        self.assertEqual(error.args[0], "A tag name is required.")
+
+
+    def test_sendCommandValidateNoneTags(self):
+        """
+        Passing None as a tag name to L{IRC.sendCommand} raises a
+        C{ValueError}.
+        """
+        sendTags = {
+            u"aaa": u"bbb",
+            u"ccc": None,
+            None: u"beep"
+        }
+        error = self.assertRaises(ValueError, self.p.sendCommand, u"CMD",
+            (u"param1", u"param2"), u"irc.example.com", sendTags)
+        self.assertEqual(error.args[0], "A tag name is required.")
+
+
+    def test_sendCommandValidateTagsWithSpaces(self):
+        """
+        Passing a tag name containing spaces to L{IRC.sendCommand} raises a
+        C{ValueError}.
+        """
+        sendTags = {
+            u"aaa bbb": u"ccc"
+        }
+        error = self.assertRaises(ValueError, self.p.sendCommand, u"CMD",
+            (u"param1", u"param2"), u"irc.example.com", sendTags)
+        self.assertEqual(error.args[0], "Tag contains invalid characters.")
+
+
+    def test_sendCommandValidateTagsWithInvalidChars(self):
+        """
+        Passing a tag name containing invalid characters to L{IRC.sendCommand}
+        raises a C{ValueError}.
+        """
+        sendTags = {
+            u"aaa_b^@": u"ccc"
+        }
+        error = self.assertRaises(ValueError, self.p.sendCommand, u"CMD",
+            (u"param1", u"param2"), u"irc.example.com", sendTags)
+        self.assertEqual(error.args[0], "Tag contains invalid characters.")
+
+
+    def test_sendCommandValidateTagValueEscaping(self):
+        """
+        Tags with values containing invalid characters passed to
+        L{IRC.sendCommand} are escaped.
+        """
+        sendTags = {
+            u"aaa": u"bbb",
+            u"ccc": u"test\r\n \\;;"
+        }
+        expectedTags = ("aaa=bbb", "ccc=test\\r\\n\\s\\\\\\:\\:")
+        self.p.sendCommand(u"CMD", (u"param1", u"param2"), u"irc.example.com",
+            sendTags)
+        outMsg = self.f.getvalue()
+        outTagStr, outLine = outMsg.split(" ", 1)
+
+        # We pull off the leading '@' sign so that the split tags can be
+        # compared with what we expect.
+        outTags = outTagStr[1:].split(";")
+
+        self.assertEqual(sorted(outTags), sorted(expectedTags))
 
 
     def testPrivmsg(self):
@@ -2277,6 +2439,15 @@ class DccTests(unittest.TestCase):
             ['foo.txt', '127.0.0.1', '1025']))])
 
 
+    def test_dccSendNotImplemented(self):
+        """
+        L{irc.IRCClient.dccDoSend} is raises C{NotImplementedError}
+        """
+        client = irc.IRCClient()
+        self.assertRaises(NotImplementedError,
+                          client.dccSend, 'username', None)
+
+
     def test_dccSendMalformedRequest(self):
         """
         L{irc.IRCClient.dcc_SEND} raises L{irc.IRCBadMessage} when it is passed
@@ -2379,7 +2550,7 @@ class DccTests(unittest.TestCase):
 
 
 
-class TestServerToClient(TestCase):
+class ServerToClientTests(TestCase):
     """
     Tests for the C{irc_*} methods sent from the server to the client.
     """
@@ -2488,7 +2659,7 @@ class TestServerToClient(TestCase):
 
 
 
-class TestCTCPQuery(TestCase):
+class CTCPQueryTests(TestCase):
     """
     Tests for the C{ctcpQuery_*} methods.
     """
@@ -2549,8 +2720,8 @@ class TestCTCPQuery(TestCase):
         """
         self.client.ctcpQuery_CLIENTINFO(self.user, self.channel, '')
         self.client.ctcpQuery_CLIENTINFO(self.user, self.channel, 'PING PONG')
-        info = ('CLIENTINFO PING DCC SOURCE VERSION '
-                'USERINFO TIME ACTION ERRMSG FINGER')
+        info = ('ACTION CLIENTINFO DCC ERRMSG FINGER PING SOURCE TIME '
+                'USERINFO VERSION')
         self.assertEqual(self.client.methods,
                          [('ctcpMakeReply', ('Wolf', [('CLIENTINFO', info)])),
                           ('ctcpMakeReply', ('Wolf', [('CLIENTINFO', None)]))])
@@ -2606,3 +2777,142 @@ class DccDescribeTests(unittest.TestCase):
         result = irc.dccDescribe('CHAT arg 3232235522 6666')
         self.assertEqual(result, "CHAT for host 192.168.0.2, port 6666")
 
+
+
+class DccFileReceiveTests(unittest.TestCase):
+    """
+    Tests for L{DccFileReceive}.
+    """
+    def makeConnectedDccFileReceive(self, filename, resumeOffset=0,
+                                    overwrite=None):
+        """
+        Factory helper that returns a L{DccFileReceive} instance
+        for a specific test case.
+
+        @param filename: Path to the local file where received data is stored.
+        @type filename: L{str}
+
+        @param resumeOffset: An integer representing the amount of bytes from
+            where the transfer of data should be resumed.
+        @type resumeOffset: L{int}
+
+        @param overwrite: A boolean specifying whether the file to write to
+            should be overwritten by calling L{DccFileReceive.set_overwrite}
+            or not.
+        @type overwrite: L{bool}
+
+        @return: An instance of L{DccFileReceive}.
+        @rtype: L{DccFileReceive}
+        """
+        protocol = irc.DccFileReceive(filename, resumeOffset=resumeOffset)
+        if overwrite:
+            protocol.set_overwrite(True)
+        transport = StringTransport()
+        protocol.makeConnection(transport)
+        return protocol
+
+
+    def allDataReceivedForProtocol(self, protocol, data):
+        """
+        Arrange the protocol so that it received all data.
+
+        @param protocol: The protocol which will receive the data.
+        @type: L{DccFileReceive}
+
+        @param data: The received data.
+        @type data: L{bytest}
+        """
+        protocol.dataReceived(data)
+        protocol.connectionLost(None)
+
+
+    def test_resumeFromResumeOffset(self):
+        """
+        If given a resumeOffset argument, L{DccFileReceive} will attempt to
+        resume from that number of bytes if the file exists.
+        """
+        fp = FilePath(self.mktemp())
+        fp.setContent(b'Twisted is awesome!')
+        protocol = self.makeConnectedDccFileReceive(fp.path, resumeOffset=11)
+
+        self.allDataReceivedForProtocol(protocol, b'amazing!')
+
+        self.assertEqual(fp.getContent(), b'Twisted is amazing!')
+
+
+    def test_resumeFromResumeOffsetInTheMiddleOfAlreadyWrittenData(self):
+        """
+        When resuming from an offset somewhere in the middle of the file,
+        for example, if there are 50 bytes in a file, and L{DccFileReceive}
+        is given a resumeOffset of 25, and after that 15 more bytes are
+        written to the file, then the resultant file should have just 40
+        bytes of data.
+        """
+        fp = FilePath(self.mktemp())
+        fp.setContent(b'Twisted is amazing!')
+        protocol = self.makeConnectedDccFileReceive(fp.path, resumeOffset=11)
+
+        self.allDataReceivedForProtocol(protocol, b'cool!')
+
+        self.assertEqual(fp.getContent(), b'Twisted is cool!')
+
+
+    def test_setOverwrite(self):
+        """
+        When local file already exists it can be overwritten using the
+        L{DccFileReceive.set_overwrite} method.
+        """
+        fp = FilePath(self.mktemp())
+        fp.setContent(b'I love contributing to Twisted!')
+        protocol = self.makeConnectedDccFileReceive(fp.path, overwrite=True)
+
+        self.allDataReceivedForProtocol(protocol, b'Twisted rocks!')
+
+        self.assertEqual(fp.getContent(), b'Twisted rocks!')
+
+
+    def test_fileDoesNotExist(self):
+        """
+        If the file does not already exist, then L{DccFileReceive} will
+        create one and write the data to it.
+        """
+        fp = FilePath(self.mktemp())
+        protocol = self.makeConnectedDccFileReceive(fp.path)
+
+        self.allDataReceivedForProtocol(protocol, b'I <3 Twisted')
+
+        self.assertEqual(fp.getContent(), b'I <3 Twisted')
+
+
+    def test_resumeWhenFileDoesNotExist(self):
+        """
+        If given a resumeOffset to resume writing to a file that does not
+        exist, L{DccFileReceive} will raise L{OSError}.
+        """
+        fp = FilePath(self.mktemp())
+
+        error = self.assertRaises(
+            OSError,
+            self.makeConnectedDccFileReceive, fp.path, resumeOffset=1)
+
+        self.assertEqual(errno.ENOENT, error.errno)
+
+
+    def test_fileAlreadyExistsNoOverwrite(self):
+        """
+        If the file already exists and overwrite action was not asked,
+        L{OSError} is raised.
+        """
+        fp = FilePath(self.mktemp())
+        fp.touch()
+
+        self.assertRaises(OSError, self.makeConnectedDccFileReceive, fp.path)
+
+
+    def test_failToOpenLocalFile(self):
+        """
+        L{IOError} is raised when failing to open the requested path.
+        """
+        fp = FilePath(self.mktemp()).child(u'child-with-no-existing-parent')
+
+        self.assertRaises(IOError, self.makeConnectedDccFileReceive, fp.path)

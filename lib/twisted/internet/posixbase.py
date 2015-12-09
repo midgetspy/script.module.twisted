@@ -15,19 +15,16 @@ import sys
 
 from zope.interface import implementer, classImplements
 
-from twisted.python.compat import _PY3
-from twisted.internet.interfaces import IReactorUNIX, IReactorUNIXDatagram
-from twisted.internet.interfaces import (
-    IReactorTCP, IReactorUDP, IReactorSSL, IReactorSocket)
-from twisted.internet.interfaces import IReactorProcess, IReactorMulticast
-from twisted.internet.interfaces import IHalfCloseableDescriptor
 from twisted.internet import error, udp, tcp
+from twisted.internet.base import ReactorBase, _SignalReactorMixin
+from twisted.internet.main import CONNECTION_DONE, CONNECTION_LOST
+from twisted.internet.interfaces import IReactorUNIX, IReactorUNIXDatagram
+from twisted.internet.interfaces import IReactorTCP, IReactorUDP, IReactorSSL
+from twisted.internet.interfaces import IReactorSocket, IHalfCloseableDescriptor
+from twisted.internet.interfaces import IReactorProcess, IReactorMulticast
 
 from twisted.python import log, failure, util
 from twisted.python.runtime import platformType, platform
-
-from twisted.internet.base import ReactorBase, _SignalReactorMixin
-from twisted.internet.main import CONNECTION_DONE, CONNECTION_LOST
 
 # Exceptions that doSelect might return frequently
 _NO_FILENO = error.ConnectionFdescWentAway('Handler has no fileno method')
@@ -47,11 +44,9 @@ unixEnabled = (platformType == 'posix')
 
 processEnabled = False
 if unixEnabled:
-    from twisted.internet import fdesc
-    # Enable on Python 3 in ticket #5987:
-    if not _PY3:
-        from twisted.internet import process, _signals
-        processEnabled = True
+    from twisted.internet import fdesc, unix
+    from twisted.internet import process, _signals
+    processEnabled = True
 
 
 if platform.isWindows():
@@ -121,7 +116,7 @@ class _FDWaker(log.Logger, object):
     writing to a pipe being monitored by the reactor.
 
     @ivar o: The file descriptor for the end of the pipe which can be
-        written to to wake up a reactor monitoring this waker.
+        written to wake up a reactor monitoring this waker.
 
     @ivar i: The file descriptor which should be monitored in order to
         be awoken by this waker.
@@ -392,18 +387,12 @@ class PosixReactorBase(_SignalReactorMixin, _DisconnectSelectableMixin,
 
     def connectUNIX(self, address, factory, timeout=30, checkPID=0):
         assert unixEnabled, "UNIX support is not present"
-        # Move this import back up to main level when twisted.internet.unix is
-        # ported to Python 3:
-        from twisted.internet import unix
         c = unix.Connector(address, factory, timeout, self, checkPID)
         c.connect()
         return c
 
     def listenUNIX(self, address, factory, backlog=50, mode=0o666, wantPID=0):
         assert unixEnabled, "UNIX support is not present"
-        # Move this import back up to main level when twisted.internet.unix is
-        # ported to Python 3:
-        from twisted.internet import unix
         p = unix.Port(address, factory, backlog, mode, self, wantPID)
         p.startListening()
         return p
@@ -421,9 +410,6 @@ class PosixReactorBase(_SignalReactorMixin, _DisconnectSelectableMixin,
         @returns: object conforming to L{IListeningPort}.
         """
         assert unixEnabled, "UNIX support is not present"
-        # Move this import back up to main level when twisted.internet.unix is
-        # ported to Python 3:
-        from twisted.internet import unix
         p = unix.DatagramPort(address, protocol, maxPacketSize, mode, self)
         p.startListening()
         return p
@@ -436,9 +422,6 @@ class PosixReactorBase(_SignalReactorMixin, _DisconnectSelectableMixin,
         EXPERIMENTAL.
         """
         assert unixEnabled, "UNIX support is not present"
-        # Move this import back up to main level when twisted.internet.unix is
-        # ported to Python 3:
-        from twisted.internet import unix
         p = unix.ConnectedDatagramPort(address, protocol, maxPacketSize, mode, bindAddress, self)
         p.startListening()
         return p

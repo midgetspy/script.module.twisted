@@ -14,7 +14,7 @@ import pdb
 import linecache
 
 from twisted.python.compat import NativeStringIO, _PY3
-from twisted.python import _reflectpy3 as reflect
+from twisted.python import reflect
 from twisted.python import failure
 
 from twisted.trial.unittest import SynchronousTestCase
@@ -41,7 +41,7 @@ def getDivisionFailure(*args, **kwargs):
     return f
 
 
-class FailureTestCase(SynchronousTestCase):
+class FailureTests(SynchronousTestCase):
     """
     Tests for L{failure.Failure}.
     """
@@ -217,6 +217,9 @@ class FailureTestCase(SynchronousTestCase):
         """
         if captureVars:
             exampleLocalVar = 'xyz'
+            # Silence the linter as this variable is checked via
+            # the traceback.
+            exampleLocalVar
 
         f = getDivisionFailure(captureVars=captureVars)
         out = NativeStringIO()
@@ -272,6 +275,9 @@ class FailureTestCase(SynchronousTestCase):
         """
         if captureVars:
             exampleLocalVar = 'abcde'
+            # Silence the linter as this variable is checked via
+            # the traceback.
+            exampleLocalVar
 
         f = getDivisionFailure()
         out = NativeStringIO()
@@ -319,6 +325,9 @@ class FailureTestCase(SynchronousTestCase):
         """
         if captureVars:
             exampleLocalVar = 'xyzzy'
+            # Silence the linter as this variable is checked via
+            # the traceback.
+            exampleLocalVar
 
         f = getDivisionFailure(captureVars=captureVars)
         out = NativeStringIO()
@@ -410,7 +419,7 @@ class FailureTestCase(SynchronousTestCase):
             detail='noisia')
 
 
-    def testExplictPass(self):
+    def test_ExplictPass(self):
         e = RuntimeError()
         f = failure.Failure(e)
         f.trap(RuntimeError)
@@ -428,21 +437,10 @@ class FailureTestCase(SynchronousTestCase):
                 "f.raiseException() didn't raise ZeroDivisionError!?")
 
 
-    def testRaiseExceptionWithTB(self):
+    def test_RaiseExceptionWithTB(self):
         f = getDivisionFailure()
         innerline = self._getInnermostFrameLine(f)
         self.assertEqual(innerline, '1/0')
-
-
-    def testLackOfTB(self):
-        f = getDivisionFailure()
-        f.cleanFailure()
-        innerline = self._getInnermostFrameLine(f)
-        self.assertEqual(innerline, '1/0')
-
-    testLackOfTB.todo = "the traceback is not preserved, exarkun said he'll try to fix this! god knows how"
-    if _PY3:
-        del testLackOfTB # fix in ticket #6008
 
 
     def test_stringExceptionConstruction(self):
@@ -454,7 +452,7 @@ class FailureTestCase(SynchronousTestCase):
         self.assertIn("Strings are not supported by Failure", str(exc))
 
 
-    def testConstructionFails(self):
+    def test_ConstructionFails(self):
         """
         Creating a Failure with no arguments causes it to try to discover the
         current interpreter exception state.  If no such state exists, creating
@@ -550,6 +548,22 @@ class FailureTestCase(SynchronousTestCase):
     if not _PY3:
         test_tracebackFromExceptionInPython3.skip = "Python 3 only."
         test_cleanFailureRemovesTracebackInPython3.skip = "Python 3 only."
+
+
+    def test_repr(self):
+        """
+        The C{repr} of a L{failure.Failure} shows the type and string
+        representation of the underlying exception.
+        """
+        f = getDivisionFailure()
+        if _PY3:
+            typeName = 'builtins.ZeroDivisionError'
+        else:
+            typeName = 'exceptions.ZeroDivisionError'
+        self.assertEqual(
+            repr(f),
+            '<twisted.python.failure.Failure '
+            '%s: division by zero>' % (typeName,))
 
 
 
@@ -740,7 +754,19 @@ class FindFailureTests(SynchronousTestCase):
 
 
 
-class TestFormattableTraceback(SynchronousTestCase):
+# On Python 3.5, extract_tb returns "FrameSummary" objects, which are almost
+# like the old tuples. This being different does not affect the actual tests
+# as we are testing that the input works, and that extract_tb returns something
+# reasonable.
+if sys.version_info < (3, 5):
+    _tb = lambda fn, lineno, name, text: (fn, lineno, name, text)
+else:
+    from traceback import FrameSummary
+    _tb = lambda fn, lineno, name, text: FrameSummary(fn, lineno, name)
+
+
+
+class FormattableTracebackTests(SynchronousTestCase):
     """
     Whitebox tests that show that L{failure._Traceback} constructs objects that
     can be used by L{traceback.extract_tb}.
@@ -760,7 +786,7 @@ class TestFormattableTraceback(SynchronousTestCase):
         # the line's contents. In this case, since filename.py doesn't exist,
         # it will just use None.
         self.assertEqual(traceback.extract_tb(tb),
-                         [('filename.py', 123, 'method', None)])
+                         [_tb('filename.py', 123, 'method', None)])
 
 
     def test_manyFrames(self):
@@ -773,12 +799,12 @@ class TestFormattableTraceback(SynchronousTestCase):
             ['method1', 'filename.py', 123, {}, {}],
             ['method2', 'filename.py', 235, {}, {}]])
         self.assertEqual(traceback.extract_tb(tb),
-                         [('filename.py', 123, 'method1', None),
-                          ('filename.py', 235, 'method2', None)])
+                         [_tb('filename.py', 123, 'method1', None),
+                          _tb('filename.py', 235, 'method2', None)])
 
 
 
-class TestFrameAttributes(SynchronousTestCase):
+class FrameAttributesTests(SynchronousTestCase):
     """
     _Frame objects should possess some basic attributes that qualify them as
     fake python Frame objects.
@@ -797,7 +823,7 @@ class TestFrameAttributes(SynchronousTestCase):
 
 
 
-class TestDebugMode(SynchronousTestCase):
+class DebugModeTests(SynchronousTestCase):
     """
     Failure's debug mode should allow jumping into the debugger.
     """
@@ -944,13 +970,11 @@ class ExtendedGeneratorTests(SynchronousTestCase):
         self.assertEqual(newFailures[0].getTraceback(), f.getTraceback())
 
     if _PY3:
-        test_findFailureInGenerator.todo = (
+        # FIXME: https://twistedmatrix.com/trac/ticket/5949
+        test_findFailureInGenerator.skip = (
             "Python 3 support to be fixed in #5949")
-        test_failureConstructionFindsOriginalFailure.todo = (
+        test_failureConstructionFindsOriginalFailure.skip = (
             "Python 3 support to be fixed in #5949")
-        # Remove these two lines in #6008 (unittest todo support):
-        del test_findFailureInGenerator
-        del test_failureConstructionFindsOriginalFailure
 
 
     def test_ambiguousFailureInGenerator(self):

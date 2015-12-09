@@ -12,11 +12,8 @@ Interface definitions for L{twisted.web}.
 
 from zope.interface import Interface, Attribute
 
-from twisted.python.compat import _PY3
 from twisted.internet.interfaces import IPushProducer
-if not _PY3:
-    # Re-enable when cred is ported to Python 3. Fix as part of #6176:
-    from twisted.cred.credentials import IUsernameDigestHash
+from twisted.cred.credentials import IUsernameDigestHash
 
 
 class IRequest(Interface):
@@ -322,6 +319,28 @@ class IRequest(Interface):
         say 'https://www.example.com', so we do::
 
            request.setHost('www.example.com', 443, ssl=1)
+        """
+
+
+
+class IAccessLogFormatter(Interface):
+    """
+    An object which can represent an HTTP request as a line of text for
+    inclusion in an access log file.
+    """
+    def __call__(timestamp, request):
+        """
+        Generate a line for the access log.
+
+        @param timestamp: The time at which the request was completed in the
+            standard format for access logs.
+        @type timestamp: L{unicode}
+
+        @param request: The request object about which to log.
+        @type request: L{twisted.web.server.Request}
+
+        @return: One line describing the request without a trailing newline.
+        @rtype: L{unicode}
         """
 
 
@@ -694,6 +713,63 @@ class IAgent(Interface):
             which prevents that response from being received (including
             problems that prevent the request from being sent).
         @rtype: L{Deferred}
+        """
+
+
+class IPolicyForHTTPS(Interface):
+    """
+    An L{IPolicyForHTTPS} provides a policy for verifying the certificates of
+    HTTPS connections, in the form of a L{client connection creator
+    <twisted.internet.interfaces.IOpenSSLClientConnectionCreator>} per network
+    location.
+
+    @since: 14.0
+    """
+
+    def creatorForNetloc(hostname, port):
+        """
+        Create a L{client connection creator
+        <twisted.internet.interfaces.IOpenSSLClientConnectionCreator>}
+        appropriate for the given URL "netloc"; i.e. hostname and port number
+        pair.
+
+        @param hostname: The name of the requested remote host.
+        @type hostname: L{bytes}
+
+        @param port: The number of the requested remote port.
+        @type port: L{int}
+
+        @return: A client connection creator expressing the security
+            requirements for the given remote host.
+        @rtype: L{client connection creator
+            <twisted.internet.interfaces.IOpenSSLClientConnectionCreator>}
+        """
+
+
+
+class IAgentEndpointFactory(Interface):
+    """
+    An L{IAgentEndpointFactory} provides a way of constructing an endpoint
+    used for outgoing Agent requests. This is useful in the case of needing to
+    proxy outgoing connections, or to otherwise vary the transport used.
+
+    @since: 15.0
+    """
+
+    def endpointForURI(uri):
+        """
+        Construct and return an L{IStreamClientEndpoint} for the outgoing
+        request's connection.
+
+        @param uri: The URI of the request.
+        @type uri: L{twisted.web.client.URI}
+
+        @return: An endpoint which will have its C{connect} method called to
+            issue the request.
+        @rtype: an L{IStreamClientEndpoint} provider
+
+        @raises twisted.internet.error.SchemeNotSupported: If the given
+            URI's scheme cannot be handled by this factory.
         """
 
 

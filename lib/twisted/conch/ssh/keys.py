@@ -22,11 +22,10 @@ from pyasn1.type import univ
 from pyasn1.codec.ber import decoder as berDecoder
 from pyasn1.codec.ber import encoder as berEncoder
 
-# twisted
-from twisted.python import randbytes
-
-# sibling imports
 from twisted.conch.ssh import common, sexpy
+from twisted.python import randbytes
+from twisted.python.deprecate import deprecated
+from twisted.python.versions import Version
 
 
 
@@ -257,7 +256,7 @@ class Key(object):
 
         try:
             decodedKey = berDecoder.decode(keyData)[0]
-        except PyAsn1Error, e:
+        except PyAsn1Error as e:
             raise BadKeyError('Failed to decode key (Bad Passphrase?): %s' % e)
 
         if kind == 'RSA':
@@ -794,20 +793,26 @@ class Key(object):
             digest = pkcs1Digest(data, self.keyObject.size() / 8)
         elif self.type() == 'DSA':
             signature = common.getNS(signature)[0]
-            numbers = [Util.number.bytes_to_long(n) for n in signature[:20],
-                       signature[20:]]
+            numbers = [
+                Util.number.bytes_to_long(n) for n in
+                    (signature[:20], signature[20:])
+                ]
             digest = sha1(data).digest()
         return self.keyObject.verify(digest, numbers)
 
 
 
+@deprecated(Version("Twisted", 15, 5, 0))
 def objectType(obj):
     """
-    Return the SSH key type corresponding to a
+    DEPRECATED. Return the SSH key type corresponding to a
     C{Crypto.PublicKey.pubkey.pubkey} object.
 
-    @type obj:  C{Crypto.PublicKey.pubkey.pubkey}
-    @rtype:     C{str}
+    @param obj: Key for which the type is returned.
+    @type obj: C{Crypto.PublicKey.pubkey.pubkey}
+
+    @return: Return the SSH key type corresponding to a PyCrypto object.
+    @rtype: C{str}
     """
     keyDataMapping = {
         ('n', 'e', 'd', 'p', 'q'): 'ssh-rsa',

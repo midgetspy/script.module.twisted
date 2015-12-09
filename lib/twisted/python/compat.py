@@ -16,17 +16,47 @@ the latest version of Python directly from your code, if possible.
 
 @var NativeStringIO: An in-memory file-like object that operates on the native
     string type (bytes in Python 2, unicode in Python 3).
+
+@var urllib_parse: a URL-parsing module (urlparse on Python 2, urllib.parse on
+    Python 3)
 """
 
-from __future__ import division
+from __future__ import absolute_import, division
 
-import sys, string, socket, struct
+import inspect
+import os
+import socket
+import string
+import struct
+import sys
+from types import MethodType as _MethodType
+
+from io import TextIOBase, IOBase
 
 
 if sys.version_info < (3, 0):
     _PY3 = False
 else:
     _PY3 = True
+
+
+
+def currentframe(n=0):
+    """
+    In Python 3, L{inspect.currentframe} does not take a stack-level argument.
+    Restore that functionality from Python 2 so we don't have to re-implement
+    the C{f_back}-walking loop in places where it's called.
+
+    @param n: The number of stack levels above the caller to walk.
+    @type n: L{int}
+
+    @return: a frame, n levels up the stack from the caller.
+    @rtype: L{types.FrameType}
+    """
+    f = inspect.currentframe()
+    for x in range(n + 1):
+        f = f.f_back
+    return f
 
 
 
@@ -92,6 +122,7 @@ def inet_ntop(af, addr):
                 curLen += 1
             else:
                 if curBase is not None:
+                    bestLen = None
                     if bestBase is None or curLen > bestLen:
                         bestBase = curBase
                         bestLen = curLen
@@ -250,8 +281,71 @@ def comparable(klass):
 
 if _PY3:
     unicode = str
+    long = int
 else:
     unicode = unicode
+    long = long
+
+
+
+def ioType(fileIshObject, default=unicode):
+    """
+    Determine the type which will be returned from the given file object's
+    read() and accepted by its write() method as an argument.
+
+    In other words, determine whether the given file is 'opened in text mode'.
+
+    @param fileIshObject: Any object, but ideally one which resembles a file.
+    @type fileIshObject: L{object}
+
+    @param default: A default value to return when the type of C{fileIshObject}
+        cannot be determined.
+    @type default: L{type}
+
+    @return: There are 3 possible return values:
+
+            1. L{unicode}, if the file is unambiguously opened in text mode.
+
+            2. L{bytes}, if the file is unambiguously opened in binary mode.
+
+            3. L{basestring}, if we are on python 2 (the L{basestring} type
+               does not exist on python 3) and the file is opened in binary
+               mode, but has an encoding and can therefore accept both bytes
+               and text reliably for writing, but will return L{bytes} from
+               read methods.
+
+            4. The C{default} parameter, if the given type is not understood.
+
+    @rtype: L{type}
+    """
+    if isinstance(fileIshObject, TextIOBase):
+        # If it's for text I/O, then it's for text I/O.
+        return unicode
+    if isinstance(fileIshObject, IOBase):
+        # If it's for I/O but it's _not_ for text I/O, it's for bytes I/O.
+        return bytes
+    encoding = getattr(fileIshObject, 'encoding', None)
+    import codecs
+    if isinstance(fileIshObject, (codecs.StreamReader, codecs.StreamWriter)):
+        # On StreamReaderWriter, the 'encoding' attribute has special meaning;
+        # it is unambiguously unicode.
+        if encoding:
+            return unicode
+        else:
+            return bytes
+    if not _PY3:
+        # Special case: if we have an encoding file, we can *give* it unicode,
+        # but we can't expect to *get* unicode.
+        if isinstance(fileIshObject, file):
+            if encoding is not None:
+                return basestring
+            else:
+                return bytes
+        from cStringIO import InputType, OutputType
+        from StringIO import StringIO
+        if isinstance(fileIshObject, (StringIO, InputType, OutputType)):
+            return bytes
+    return default
 
 
 
@@ -322,7 +416,7 @@ if _PY3:
 
     # Ideally we would use memoryview, but it has a number of differences from
     # the Python 2 buffer() that make that impractical
-    # (http://bugs.python.org/issue15945, incompatiblity with pyOpenSSL due to
+    # (http://bugs.python.org/issue15945, incompatibility with pyOpenSSL due to
     # PyArg_ParseTuple differences.)
     def lazyByteSlice(object, offset=0, size=None):
         """
@@ -405,6 +499,142 @@ interpolation.  For example, this is safe on Python 2 and Python 3:
 """
 
 
+try:
+    StringType = basestring
+except NameError:
+    # Python 3+
+    StringType = str
+
+try:
+    from types import InstanceType
+except ImportError:
+    # Python 3+
+    InstanceType = object
+
+try:
+    from types import FileType
+except ImportError:
+    # Python 3+
+    FileType = IOBase
+
+if _PY3:
+    import urllib.parse as urllib_parse
+    from html import escape
+    from urllib.parse import quote as urlquote
+    from urllib.parse import unquote as urlunquote
+    from http import cookiejar as cookielib
+else:
+    import urlparse as urllib_parse
+    from cgi import escape
+    from urllib import quote as urlquote
+    from urllib import unquote as urlunquote
+    import cookielib
+
+
+# Dealing with the differences in items/iteritems
+if _PY3:
+    def iteritems(d):
+        return d.items()
+
+    def itervalues(d):
+        return d.values()
+
+    def items(d):
+        return list(d.items())
+
+    xrange = range
+    izip = zip
+else:
+    def iteritems(d):
+        return d.iteritems()
+
+    def itervalues(d):
+        return d.itervalues()
+
+    def items(d):
+        return d.items()
+
+    xrange = xrange
+    from itertools import izip
+    izip # shh pyflakes
+
+
+iteritems.__doc__ = """
+Return an iterable of the items of C{d}.
+
+@type d: L{dict}
+@rtype: iterable
+"""
+
+itervalues.__doc__ = """
+Return an iterable of the values of C{d}.
+
+@type d: L{dict}
+@rtype: iterable
+"""
+
+items.__doc__ = """
+Return a list of the items of C{d}.
+
+@type d: L{dict}
+@rtype: L{list}
+"""
+
+
+
+def bytesEnviron():
+    """
+    Return a L{dict} of L{os.environ} where all text-strings are encoded into
+    L{bytes}.
+    """
+    if not _PY3:
+        # On py2, nothing to do.
+        return dict(os.environ)
+
+    target = dict()
+    for x, y in os.environ.items():
+        target[os.environ.encodekey(x)] = os.environ.encodevalue(y)
+
+    return target
+
+
+
+def _constructMethod(cls, name, self):
+    """
+    Construct a bound method.
+
+    @param cls: The class that the method should be bound to.
+    @type cls: L{types.ClassType} or L{type}.
+
+    @param name: The name of the method.
+    @type name: native L{str}
+
+    @param self: The object that the method is bound to.
+    @type self: any object
+
+    @return: a bound method
+    @rtype: L{types.MethodType}
+    """
+    func = cls.__dict__[name]
+    if _PY3:
+        return _MethodType(func, self)
+    return _MethodType(func, self, cls)
+
+
+
+from twisted.python.versions import Version
+from twisted.python.deprecate import deprecatedModuleAttribute
+
+from collections import OrderedDict
+
+deprecatedModuleAttribute(
+    Version("Twisted", 15, 5, 0),
+    "Use collections.OrderedDict instead.",
+    "twisted.python.compat",
+    "OrderedDict")
+
+
+
 __all__ = [
     "reraise",
     "execfile",
@@ -413,6 +643,7 @@ __all__ = [
     "set",
     "cmp",
     "comparable",
+    "OrderedDict",
     "nativeString",
     "NativeStringIO",
     "networkString",
@@ -420,4 +651,17 @@ __all__ = [
     "iterbytes",
     "intToBytes",
     "lazyByteSlice",
-    ]
+    "StringType",
+    "InstanceType",
+    "FileType",
+    "items",
+    "iteritems",
+    "itervalues",
+    "xrange",
+    "urllib_parse",
+    "bytesEnviron",
+    "escape",
+    "urlquote",
+    "urlunquote",
+    "cookielib",
+]

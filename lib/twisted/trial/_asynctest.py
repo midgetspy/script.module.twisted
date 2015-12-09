@@ -10,6 +10,7 @@ Maintainer: Jonathan Lange
 
 from __future__ import division, absolute_import
 
+import inspect
 import warnings
 
 from zope.interface import implementer
@@ -102,6 +103,11 @@ class TestCase(SynchronousTestCase):
         onTimeout = utils.suppressWarnings(
             onTimeout, util.suppress(category=DeprecationWarning))
         method = getattr(self, methodName)
+        if inspect.isgeneratorfunction(method):
+            exc = TypeError(
+                '%r is a generator function and therefore will never run' % (
+                    method,))
+            return defer.fail(exc)
         d = defer.maybeDeferred(
             utils.runWithWarningsSuppressed, self._getSuppress(), method)
         call = reactor.callLater(timeout, onTimeout, d)
@@ -190,10 +196,10 @@ class TestCase(SynchronousTestCase):
 
 
     def _cbDeferRunCleanups(self, cleanupResults, result):
-        for flag, failure in cleanupResults:
+        for flag, testFailure in cleanupResults:
             if flag == defer.FAILURE:
-                result.addError(self, failure)
-                if failure.check(KeyboardInterrupt):
+                result.addError(self, testFailure)
+                if testFailure.check(KeyboardInterrupt):
                     result.stop()
                 self._passed = False
 

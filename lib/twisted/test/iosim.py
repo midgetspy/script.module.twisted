@@ -1,10 +1,12 @@
-# -*- test-case-name: twisted.test.test_amp.TLSTest -*-
+# -*- test-case-name: twisted.test.test_amp.TLSTests,twisted.test.test_iosim -*-
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
 """
 Utilities and helpers for simulating a network
 """
+
+from __future__ import absolute_import, division, print_function
 
 import itertools
 
@@ -13,11 +15,12 @@ try:
 except ImportError:
     pass
 
-from zope.interface import implements, directlyProvides
+from zope.interface import implementer, directlyProvides
 
 from twisted.python.failure import Failure
 from twisted.internet import error
 from twisted.internet import interfaces
+
 
 class TLSNegotiation:
     def __init__(self, obj, connectState):
@@ -26,8 +29,10 @@ class TLSNegotiation:
         self.sent = False
         self.readyToSend = connectState
 
+
     def __repr__(self):
         return 'TLSNegotiation(%r)' % (self.obj,)
+
 
     def pretendToVerify(self, other, tpt):
         # Set the transport problems list here?  disconnections?
@@ -39,15 +44,17 @@ class TLSNegotiation:
 
 
 
+@implementer(interfaces.IAddress)
 class FakeAddress(object):
     """
     The default address type for the host and peer of L{FakeTransport}
     connections.
     """
-    implements(interfaces.IAddress)
 
 
 
+@implementer(interfaces.ITransport,
+             interfaces.ITLSTransport)
 class FakeTransport:
     """
     A wrapper around a file-like object to make it behave as a Transport.
@@ -55,10 +62,8 @@ class FakeTransport:
     This doesn't actually stream the file to the attached protocol,
     and is thus useful mainly as a utility for debugging protocols.
     """
-    implements(interfaces.ITransport,
-               interfaces.ITLSTransport) # ha ha not really
 
-    _nextserial = itertools.count().next
+    _nextserial = staticmethod(lambda counter=itertools.count(): next(counter))
     closed = 0
     disconnecting = 0
     disconnected = 0
@@ -108,40 +113,58 @@ class FakeTransport:
         else:
             self.stream.append(data)
 
+
     def _checkProducer(self):
         # Cheating; this is called at "idle" times to allow producers to be
         # found and dealt with
         if self.producer:
             self.producer.resumeProducing()
 
+
     def registerProducer(self, producer, streaming):
-        """From abstract.FileDescriptor
+        """
+        From abstract.FileDescriptor
         """
         self.producer = producer
         self.streamingProducer = streaming
         if not streaming:
             producer.resumeProducing()
 
+
     def unregisterProducer(self):
         self.producer = None
+
 
     def stopConsuming(self):
         self.unregisterProducer()
         self.loseConnection()
 
+
     def writeSequence(self, iovec):
-        self.write("".join(iovec))
+        self.write(b"".join(iovec))
+
 
     def loseConnection(self):
         self.disconnecting = True
 
+
+    def abortConnection(self):
+        """
+        For the time being, this is the same as loseConnection; no buffered
+        data will be lost.
+        """
+        self.disconnecting = True
+
+
     def reportDisconnect(self):
         if self.tls is not None:
-            # We were in the middle of negotiating!  Must have been a TLS problem.
+            # We were in the middle of negotiating!  Must have been a TLS
+            # problem.
             err = NativeOpenSSLError()
         else:
             err = self.disconnectReason
         self.protocol.connectionLost(Failure(err))
+
 
     def logPrefix(self):
         """
@@ -149,22 +172,28 @@ class FakeTransport:
         """
         return "iosim"
 
+
     def getPeer(self):
         return self.peerAddress
 
+
     def getHost(self):
         return self.hostAddress
+
 
     def resumeProducing(self):
         # Never sends data anyways
         pass
 
+
     def pauseProducing(self):
         # Never sends data anyways
         pass
 
+
     def stopProducing(self):
         self.loseConnection()
+
 
     def startTLS(self, contextFactory, beNormal=True):
         # Nothing's using this feature yet, but startTLS has an undocumented
@@ -174,11 +203,19 @@ class FakeTransport:
         self.tls = TLSNegotiation(contextFactory, connectState)
         self.tlsbuf = []
 
+
     def getOutBuffer(self):
+        """
+        Get the pending writes from this transport, clearing them from the
+        pending buffer.
+
+        @return: the bytes written with C{transport.write}
+        @rtype: L{bytes}
+        """
         S = self.stream
         if S:
             self.stream = []
-            return ''.join(S)
+            return b''.join(S)
         elif self.tls is not None:
             if self.tls.readyToSend:
                 # Only _send_ the TLS negotiation "packet" if I'm ready to.
@@ -189,6 +226,7 @@ class FakeTransport:
         else:
             return None
 
+
     def bufferReceived(self, buf):
         if isinstance(buf, TLSNegotiation):
             assert self.tls is not None # By the time you're receiving a
@@ -196,7 +234,7 @@ class FakeTransport:
                                         # startTLS already.
             if self.tls.sent:
                 self.tls.pretendToVerify(buf, self)
-                self.tls = None # we're done with the handshake if we've gotten
+                self.tls = None # We're done with the handshake if we've gotten
                                 # this far... although maybe it failed...?
                 # TLS started!  Unbuffer...
                 b, self.tlsbuf = self.tlsbuf, None
@@ -239,7 +277,8 @@ def makeFakeServer(serverProtocol):
 
 
 class IOPump:
-    """Utility to pump data between clients and servers for protocol testing.
+    """
+    Utility to pump data between clients and servers for protocol testing.
 
     Perhaps this is a utility worthy of being in protocol.py?
     """
@@ -250,8 +289,10 @@ class IOPump:
         self.serverIO = serverIO
         self.debug = debug
 
+
     def flush(self, debug=False):
-        """Pump until there is no more input or output.
+        """
+        Pump until there is no more input or output.
 
         Returns whether any data was moved.
         """
@@ -267,23 +308,24 @@ class IOPump:
 
 
     def pump(self, debug=False):
-        """Move data back and forth.
+        """
+        Move data back and forth.
 
         Returns whether any data was moved.
         """
         if self.debug or debug:
-            print '-- GLUG --'
+            print('-- GLUG --')
         sData = self.serverIO.getOutBuffer()
         cData = self.clientIO.getOutBuffer()
         self.clientIO._checkProducer()
         self.serverIO._checkProducer()
         if self.debug or debug:
-            print '.'
+            print('.')
             # XXX slightly buggy in the face of incremental output
             if cData:
-                print 'C: '+repr(cData)
+                print('C: ' + repr(cData))
             if sData:
-                print 'S: '+repr(sData)
+                print('S: ' + repr(sData))
         if cData:
             self.serverIO.bufferReceived(cData)
         if sData:
@@ -293,14 +335,14 @@ class IOPump:
         if (self.serverIO.disconnecting and
             not self.serverIO.disconnected):
             if self.debug or debug:
-                print '* C'
+                print('* C')
             self.serverIO.disconnected = True
             self.clientIO.disconnecting = True
             self.clientIO.reportDisconnect()
             return True
         if self.clientIO.disconnecting and not self.clientIO.disconnected:
             if self.debug or debug:
-                print '* S'
+                print('* S')
             self.clientIO.disconnected = True
             self.serverIO.disconnecting = True
             self.serverIO.reportDisconnect()
@@ -321,25 +363,27 @@ def connect(serverProtocol, serverTransport,
     @param serverTransport: The transport to associate with C{serverProtocol}.
     @type serverTransport: L{FakeTransport}
 
-    @param clientProtocol: The transport to associate with C{clientProtocol}.
+    @param clientProtocol: The protocol to use on the initiating side of the
+        connection.
     @type clientProtocol: L{IProtocol} provider
 
-    @param clientTransport:
+    @param clientTransport: The transport to associate with C{clientProtocol}.
     @type clientTransport: L{FakeTransport}
 
     @param debug: A flag indicating whether to log information about what the
         L{IOPump} is doing.
     @type debug: L{bool}
 
-    @return: An L{IOPump} which connects C{serverProtocol} and C{clientProtocol}
-        and delivers bytes between them when it is pumped.
+    @return: An L{IOPump} which connects C{serverProtocol} and
+        C{clientProtocol} and delivers bytes between them when it is pumped.
     @rtype: L{IOPump}
     """
     serverProtocol.makeConnection(serverTransport)
     clientProtocol.makeConnection(clientTransport)
     pump = IOPump(
-        clientProtocol, serverProtocol, clientTransport, serverTransport, debug)
-    # kick off server greeting, etc
+        clientProtocol, serverProtocol, clientTransport, serverTransport, debug
+    )
+    # Kick off server greeting, etc
     pump.flush()
     return pump
 
@@ -349,7 +393,34 @@ def connectedServerAndClient(ServerClass, ClientClass,
                              clientTransportFactory=makeFakeClient,
                              serverTransportFactory=makeFakeServer,
                              debug=False):
-    """Returns a 3-tuple: (client, server, pump)
+    """
+    Connect a given server and client class to each other.
+
+    @param ServerClass: a callable that produces the server-side protocol.
+    @type ServerClass: 0-argument callable returning L{IProtocol} provider.
+
+    @param ClientClass: like C{ServerClass} but for the other side of the
+        connection.
+    @type ClientClass: 0-argument callable returning L{IProtocol} provider.
+
+    @param clientTransportFactory: a callable that produces the transport which
+        will be attached to the protocol returned from C{ClientClass}.
+    @type clientTransportFactory: callable taking (L{IProtocol}) and returning
+        L{FakeTransport}
+
+    @param serverTransportFactory: a callable that produces the transport which
+        will be attached to the protocol returned from C{ServerClass}.
+    @type serverTransportFactory: callable taking (L{IProtocol}) and returning
+        L{FakeTransport}
+
+    @param debug: Should this dump an escaped version of all traffic on this
+        connection to stdout for inspection?
+    @type debug: L{bool}
+
+    @return: the client protocol, the server protocol, and an L{IOPump} which,
+        when its C{pump} and C{flush} methods are called, will move data
+        between the created client and server protocol instances.
+    @rtype: 3-L{tuple} of L{IProtocol}, L{IProtocol}, L{IOPump}
     """
     c = ClientClass()
     s = ServerClass()

@@ -16,6 +16,11 @@ from zope.interface import implementer
 
 from twisted.python import log, failure, components
 from twisted.internet import interfaces, error, defer
+from twisted.logger import Logger
+
+_log = Logger()
+_logFor = lambda _:_log.__get__(_, _.__class__)
+
 
 
 @implementer(interfaces.IProtocolFactory, interfaces.ILoggingContext)
@@ -68,7 +73,8 @@ class Factory:
         """
         if not self.numPorts:
             if self.noisy:
-                log.msg("Starting factory %r" % self)
+                _logFor(self).info("Starting factory {factory!r}",
+                                   factory=self)
             self.startFactory()
         self.numPorts = self.numPorts + 1
 
@@ -84,7 +90,8 @@ class Factory:
         self.numPorts = self.numPorts - 1
         if not self.numPorts:
             if self.noisy:
-                log.msg("Stopping factory %r" % self)
+                _logFor(self).info("Stopping factory {factory!r}",
+                                   factory=self)
             self.stopFactory()
 
     def startFactory(self):
@@ -109,12 +116,17 @@ class Factory:
         directly.
         """
 
+
     def buildProtocol(self, addr):
-        """Create an instance of a subclass of Protocol.
+        """
+        Create an instance of a subclass of Protocol.
 
         The returned instance will handle input on an incoming server
-        connection, and an attribute \"factory\" pointing to the creating
+        connection, and an attribute "factory" pointing to the creating
         factory.
+
+        Alternatively, C{None} may be returned to immediately close the
+        new connection.
 
         Override this method to alter how Protocol instances get created.
 
@@ -123,6 +135,7 @@ class Factory:
         p = self.protocol()
         p.factory = self
         return p
+
 
 
 class ClientFactory(Factory):

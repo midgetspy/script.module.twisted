@@ -5,9 +5,11 @@
 Tests for (new code in) L{twisted.application.internet}.
 """
 
+from __future__ import absolute_import, division
+
 import pickle
 
-from zope.interface import implements
+from zope.interface import implementer
 from zope.interface.verify import verifyClass
 
 from twisted.internet.protocol import Factory
@@ -29,6 +31,7 @@ def fakeTargetFunction():
 
 
 
+@implementer(IStreamServerEndpoint)
 class FakeServer(object):
     """
     In-memory implementation of L{IStreamServerEndpoint}.
@@ -49,9 +52,6 @@ class FakeServer(object):
     @ivar failImmediately: If set, the exception to fail the L{Deferred}
         returned from C{listen} before it is returned.
     """
-
-    implements(IStreamServerEndpoint)
-
     result = None
     factory = None
     failImmediately = None
@@ -98,15 +98,13 @@ verifyClass(IStreamServerEndpoint, FakeServer)
 
 
 
+@implementer(IListeningPort)
 class FakePort(object):
     """
     Fake L{IListeningPort} implementation.
 
     @ivar deferred: The L{Deferred} returned by C{stopListening}.
     """
-
-    implements(IListeningPort)
-
     deferred = None
 
     def stopListening(self):
@@ -117,7 +115,7 @@ verifyClass(IStreamServerEndpoint, FakeServer)
 
 
 
-class TestEndpointService(TestCase):
+class EndpointServiceTests(TestCase):
     """
     Tests for L{twisted.application.internet}.
     """
@@ -163,7 +161,7 @@ class TestEndpointService(TestCase):
         """
         L{StreamServerEndpointService.privilegedStartService} should behave the
         same as C{startService} with respect to
-        L{TestEndpointService.test_synchronousRaiseRaisesSynchronously}.
+        L{EndpointServiceTests.test_synchronousRaiseRaisesSynchronously}.
         """
         self.test_synchronousRaiseRaisesSynchronously(
             self.svc.privilegedStartService)
@@ -265,7 +263,7 @@ class TestEndpointService(TestCase):
 
 
 
-class TestTimerService(TestCase):
+class TimerServiceTests(TestCase):
     """
     Tests for L{twisted.application.internet.TimerService}.
 
@@ -276,7 +274,7 @@ class TestTimerService(TestCase):
     @ivar clock: source of time
 
     @type deferred: L{Deferred}
-    @ivar deferred: deferred returned by L{TestTimerService.call}.
+    @ivar deferred: deferred returned by L{TimerServiceTests.call}.
     """
 
     def setUp(self):

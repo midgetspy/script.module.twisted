@@ -1,10 +1,9 @@
 # -*- test-case-name: twisted.trial.test.test_script -*-
-
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
+from __future__ import absolute_import, division, print_function
 
-from __future__ import print_function
 import gc
 import inspect
 import os
@@ -18,12 +17,13 @@ from twisted.internet import defer
 from twisted.application import app
 from twisted.python import usage, reflect, failure
 from twisted.python.filepath import FilePath
+from twisted.python.reflect import namedModule
+from twisted.python.compat import long
 from twisted import plugin
-from twisted.python.util import spewer
 from twisted.trial import runner, itrial, reporter
 
 
-# Yea, this is stupid.  Leave it for for command-line compatibility for a
+# Yea, this is stupid.  Leave it for command-line compatibility for a
 # while, though.
 TBFORMAT_MAP = {
     'plain': 'default',
@@ -68,7 +68,7 @@ def loadLocalVariables(filename):
 
     See http://www.gnu.org/software/emacs/manual/html_node/File-Variables.html
     """
-    f = file(filename, "r")
+    f = open(filename, "r")
     lines = [f.readline(), f.readline()]
     f.close()
     for line in lines:
@@ -276,6 +276,7 @@ class _BasicOptions(object):
         Print an insanely verbose log of everything that happens.  Useful
         when debugging freezes or locks in complex code.
         """
+        from twisted.python.util import spewer
         sys.settrace(spewer)
 
 
@@ -496,7 +497,7 @@ def _initialDebugSetup(config):
 def _getSuite(config):
     loader = _getLoader(config)
     recurse = not config['no-recurse']
-    return loader.loadByNames(config['tests'], recurse)
+    return loader.loadByNames(config['tests'], recurse=recurse)
 
 
 
@@ -523,7 +524,7 @@ def _wrappedPdb():
 
     dbg = pdb.Pdb()
     try:
-        import readline
+        namedModule('readline')
     except ImportError:
         print("readline module not available")
         sys.exc_clear()
@@ -599,8 +600,8 @@ def run():
     config = Options()
     try:
         config.parseOptions()
-    except usage.error, ue:
-        raise SystemExit, "%s: %s" % (sys.argv[0], ue)
+    except usage.error as ue:
+        raise SystemExit("%s: %s" % (sys.argv[0], ue))
     _initialDebugSetup(config)
 
     try:

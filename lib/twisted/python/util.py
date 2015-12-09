@@ -2,7 +2,7 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
-from __future__ import division, absolute_import
+from __future__ import division, absolute_import, print_function
 
 import os, sys, errno, warnings
 try:
@@ -14,13 +14,18 @@ try:
 except ImportError:
     setgroups = getgroups = None
 
-from twisted.python.deprecate import deprecated
-from twisted.python.versions import Version
 from twisted.python.compat import _PY3, unicode
-if _PY3:
-    UserDict = object
-else:
-    from UserDict import UserDict
+from twisted.python.versions import Version
+from twisted.python.deprecate import deprecatedModuleAttribute
+
+# For backwards compatibility, some things import this, so just link it
+from collections import OrderedDict
+
+deprecatedModuleAttribute(
+    Version("Twisted", 15, 5, 0),
+    "Use collections.OrderedDict instead.",
+    "twisted.python.util",
+    "OrderedDict")
 
 
 
@@ -70,7 +75,7 @@ class InsensitiveDict:
         k = self._lowerOrReturn(key)
         return k in self.data
 
-    __contains__=has_key
+    __contains__ = has_key
 
     def _doPreserve(self, key):
         if not self.preserve and (isinstance(key, bytes)
@@ -150,70 +155,6 @@ class InsensitiveDict:
         return len(self)==len(other)
 
 
-
-class OrderedDict(UserDict):
-    """A UserDict that preserves insert order whenever possible."""
-    def __init__(self, dict=None, **kwargs):
-        self._order = []
-        self.data = {}
-        if dict is not None:
-            if hasattr(dict,'keys'):
-                self.update(dict)
-            else:
-                for k,v in dict: # sequence
-                    self[k] = v
-        if len(kwargs):
-            self.update(kwargs)
-    def __repr__(self):
-        return '{'+', '.join([('%r: %r' % item) for item in self.items()])+'}'
-
-    def __setitem__(self, key, value):
-        if not self.has_key(key):
-            self._order.append(key)
-        UserDict.__setitem__(self, key, value)
-
-    def copy(self):
-        return self.__class__(self)
-
-    def __delitem__(self, key):
-        UserDict.__delitem__(self, key)
-        self._order.remove(key)
-
-    def iteritems(self):
-        for item in self._order:
-            yield (item, self[item])
-
-    def items(self):
-        return list(self.iteritems())
-
-    def itervalues(self):
-        for item in self._order:
-            yield self[item]
-
-    def values(self):
-        return list(self.itervalues())
-
-    def iterkeys(self):
-        return iter(self._order)
-
-    def keys(self):
-        return list(self._order)
-
-    def popitem(self):
-        key = self._order[-1]
-        value = self[key]
-        del self[key]
-        return (key, value)
-
-    def setdefault(self, item, default):
-        if self.has_key(item):
-            return self[item]
-        self[item] = default
-        return default
-
-    def update(self, d):
-        for k, v in d.items():
-            self[k] = v
 
 def uniquify(lst):
     """Make the elements of a list unique by inserting them into a dictionary.
@@ -387,7 +328,7 @@ def spewer(frame, s, ignored):
     A trace function for sys.settrace that prints every function or method call.
     """
     from twisted.python import reflect
-    if frame.f_locals.has_key('self'):
+    if 'self' in frame.f_locals:
         se = frame.f_locals['self']
         if hasattr(se, '__class__'):
             k = reflect.qual(se.__class__)
@@ -476,7 +417,7 @@ def raises(exception, f, *args, **kwargs):
     return 0
 
 
-class IntervalDifferential:
+class IntervalDifferential(object):
     """
     Given a list of intervals, generate the amount of time to sleep between
     "instants".
@@ -511,14 +452,14 @@ class IntervalDifferential:
         return _IntervalDifferentialIterator(self.intervals, self.default)
 
 
-class _IntervalDifferentialIterator:
+class _IntervalDifferentialIterator(object):
     def __init__(self, i, d):
 
         self.intervals = [[e, e, n] for (e, n) in zip(i, range(len(i)))]
         self.default = d
         self.last = 0
 
-    def next(self):
+    def __next__(self):
         if not self.intervals:
             return (self.default, None)
         last, index = self.intervals[0][0], self.intervals[0][2]
@@ -527,6 +468,9 @@ class _IntervalDifferentialIterator:
         result = last - self.last
         self.last = last
         return result, index
+
+    # Iterators on Python 2 use next(), not __next__()
+    next = __next__
 
     def addInterval(self, i):
         if self.intervals:
@@ -615,18 +559,14 @@ class FancyEqMixin:
 
 
 try:
-    # Python 2.7 / Python 3.3
-    from os import initgroups as _c_initgroups
+    # initgroups is available in Python 2.7+ on UNIX-likes
+    from os import initgroups as _initgroups
 except ImportError:
-    try:
-        # Python 2.6
-        from twisted.python._initgroups import initgroups as _c_initgroups
-    except ImportError:
-        _c_initgroups = None
+    _initgroups = None
 
 
 
-if pwd is None or grp is None or setgroups is None or getgroups is None:
+if _initgroups is None:
     def initgroups(uid, primaryGid):
         """
         Do nothing.
@@ -634,42 +574,11 @@ if pwd is None or grp is None or setgroups is None or getgroups is None:
         Underlying platform support require to manipulate groups is missing.
         """
 else:
-    # Fallback to the inefficient Python version
-    def _setgroups_until_success(l):
-        while(1):
-            # NASTY NASTY HACK (but glibc does it so it must be okay):
-            # In case sysconfig didn't give the right answer, find the limit
-            # on max groups by just looping, trying to set fewer and fewer
-            # groups each time until it succeeds.
-            try:
-                setgroups(l)
-            except ValueError:
-                # This exception comes from python itself restricting
-                # number of groups allowed.
-                if len(l) > 1:
-                    del l[-1]
-                else:
-                    raise
-            except OSError as e:
-                if e.errno == errno.EINVAL and len(l) > 1:
-                    # This comes from the OS saying too many groups
-                    del l[-1]
-                else:
-                    raise
-            else:
-                # Success, yay!
-                return
-
     def initgroups(uid, primaryGid):
         """
         Initializes the group access list.
 
-        If the C extension is present, we're calling it, which in turn calls
-        initgroups(3).
-
-        If not, this is done by reading the group database /etc/group and using
-        all groups of which C{uid} is a member.  The additional group
-        C{primaryGid} is also added to the list.
+        This uses the stdlib support which calls initgroups(3) under the hood.
 
         If the given user is a member of more than C{NGROUPS}, arbitrary
         groups will be silently discarded to bring the number below that
@@ -682,35 +591,7 @@ else:
         @param primaryGid: If provided, an additional GID to include when
             setting the groups.
         """
-        if _c_initgroups is not None:
-            return _c_initgroups(pwd.getpwuid(uid)[0], primaryGid)
-        try:
-            # Try to get the maximum number of groups
-            max_groups = os.sysconf("SC_NGROUPS_MAX")
-        except:
-            # No predefined limit
-            max_groups = 0
-
-        username = pwd.getpwuid(uid)[0]
-        l = []
-        if primaryGid is not None:
-            l.append(primaryGid)
-        for groupname, password, gid, userlist in grp.getgrall():
-            if username in userlist:
-                l.append(gid)
-                if len(l) == max_groups:
-                    break # No more groups, ignore any more
-        try:
-            _setgroups_until_success(l)
-        except OSError as e:
-            # We might be able to remove this code now that we
-            # don't try to setgid/setuid even when not asked to.
-            if e.errno == errno.EPERM:
-                for g in getgroups():
-                    if g not in l:
-                        raise
-            else:
-                raise
+        return _initgroups(pwd.getpwuid(uid)[0], primaryGid)
 
 
 
@@ -834,48 +715,6 @@ def untilConcludes(f, *a, **kw):
             if e.args[0] == errno.EINTR:
                 continue
             raise
-
-
-
-_idFunction = id
-
-@deprecated(Version("Twisted", 13, 0, 0))
-def setIDFunction(idFunction):
-    """
-    Change the function used by L{unsignedID} to determine the integer id value
-    of an object.  This is largely useful for testing to give L{unsignedID}
-    deterministic, easily-controlled behavior.
-
-    @param idFunction: A function with the signature of L{id}.
-    @return: The previous function being used by L{unsignedID}.
-    """
-    global _idFunction
-    oldIDFunction = _idFunction
-    _idFunction = idFunction
-    return oldIDFunction
-
-
-# A value about twice as large as any Python int, to which negative values
-# from id() will be added, moving them into a range which should begin just
-# above where positive values from id() leave off.
-_HUGEINT = (sys.maxsize + 1) * 2
-
-@deprecated(Version("Twisted", 13, 0, 0), "builtin id")
-def unsignedID(obj):
-    """
-    Return the id of an object as an unsigned number so that its hex
-    representation makes sense.
-
-    This is mostly necessary in Python 2.4 which implements L{id} to sometimes
-    return a negative value.  Python 2.3 shares this behavior, but also
-    implements hex and the %x format specifier to represent negative values as
-    though they were positive ones, obscuring the behavior of L{id}.  Python
-    2.5's implementation of L{id} always returns positive values.
-    """
-    rval = _idFunction(obj)
-    if rval < 0:
-        rval += _HUGEINT
-    return rval
 
 
 
@@ -1071,19 +910,16 @@ __all__ = [
     "getPassword", "println", "makeStatBar", "OrderedDict",
     "InsensitiveDict", "spewer", "searchupwards", "LineLog",
     "raises", "IntervalDifferential", "FancyStrMixin", "FancyEqMixin",
-    "switchUID", "SubclassableCStringIO", "unsignedID", "mergeFunctionMetadata",
+    "switchUID", "SubclassableCStringIO", "mergeFunctionMetadata",
     "nameToLabel", "uidFromString", "gidFromString", "runAsEffectiveUser",
-    "untilConcludes",
-    "runWithWarningsSuppressed",
-    ]
+    "untilConcludes", "runWithWarningsSuppressed",
+]
 
 
 if _PY3:
-    __all3__ = ["FancyEqMixin", "setIDFunction", "unsignedID", "untilConcludes",
-                "runWithWarningsSuppressed", "FancyStrMixin", "nameToLabel",
-                "InsensitiveDict"]
+    __notported__ = ["SubclassableCStringIO", "LineLog", "makeStatBar"]
     for name in __all__[:]:
-        if name not in __all3__:
+        if name in __notported__:
             __all__.remove(name)
             del globals()[name]
-    del name, __all3__
+    del name, __notported__

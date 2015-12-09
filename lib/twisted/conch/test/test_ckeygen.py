@@ -5,19 +5,19 @@
 Tests for L{twisted.conch.scripts.ckeygen}.
 """
 
+import __builtin__
 import getpass
 import sys
 from StringIO import StringIO
 
-try:
-    import Crypto
-    import pyasn1
-except ImportError:
-    skip = "PyCrypto and pyasn1 required for twisted.conch.scripts.ckeygen."
-else:
+from twisted.python.reflect import requireModule
+
+if requireModule('Crypto') and requireModule('pyasn1'):
     from twisted.conch.ssh.keys import Key, BadKeyError
     from twisted.conch.scripts.ckeygen import (
         changePassPhrase, displayPublicKey, printFingerprint, _saveKey)
+else:
+    skip = "PyCrypto and pyasn1 required for twisted.conch.scripts.ckeygen."
 
 from twisted.python.filepath import FilePath
 from twisted.trial.unittest import TestCase
@@ -33,6 +33,8 @@ def makeGetpass(*passphrases):
     requested interactively.
 
     @param passphrases: The list of passphrases returned, one per each call.
+
+    @return: A callable to patch C{getpass.getpass}.
     """
     passphrases = iter(passphrases)
 
@@ -81,7 +83,9 @@ class KeyGenTests(TestCase):
         key = Key.fromString(privateRSA_openssh)
         _saveKey(
             key.keyObject,
-            {'filename': filename, 'pass': 'passphrase'})
+            {'filename': filename, 'pass': 'passphrase'},
+            'rsa',
+            )
         self.assertEqual(
             self.stdout.getvalue(),
             "Your identification has been saved in %s\n"
@@ -110,11 +114,35 @@ class KeyGenTests(TestCase):
         key = Key.fromString(privateRSA_openssh)
         _saveKey(
             key.keyObject,
-            {'filename': filename, 'no-passphrase': True})
+            {'filename': filename, 'no-passphrase': True},
+            'rsa',
+            )
         self.assertEqual(
             key.fromString(
                 base.child('id_rsa').getContent(), None, b''),
             key)
+
+
+    def test_saveKeyNoFilename(self):
+        """
+        When no path is specified, it will ask for the path used to store the
+        key.
+        """
+        base = FilePath(self.mktemp())
+        base.makedirs()
+        keyPath = base.child('custom_key').path
+
+        self.patch(__builtin__, 'raw_input', lambda _: keyPath)
+        key = Key.fromString(privateRSA_openssh)
+        _saveKey(
+            key.keyObject,
+            {'filename': None, 'no-passphrase': True},
+            'rsa',
+            )
+
+        persistedKeyContent = base.child('custom_key').getContent()
+        persistedKey = key.fromString(persistedKeyContent, None, b'')
+        self.assertEqual(key, persistedKey)
 
 
     def test_displayPublicKey(self):

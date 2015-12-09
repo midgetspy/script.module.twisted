@@ -9,7 +9,6 @@ Tests for L{twisted.conch.ssh.filetransfer}.
 import os
 import re
 import struct
-import sys
 
 from twisted.trial import unittest
 try:
@@ -101,7 +100,7 @@ class SFTPTestBase(unittest.TestCase):
         file(os.path.join(self.testDir, '.testHiddenFile'), 'w').write('a')
 
 
-class TestOurServerOurClient(SFTPTestBase):
+class OurServerOurClientTests(SFTPTestBase):
 
     if not unix:
         skip = "can't run on non-posix computers"
@@ -146,6 +145,15 @@ class TestOurServerOurClient(SFTPTestBase):
     def testServerVersion(self):
         self.assertEqual(self._serverVersion, 3)
         self.assertEqual(self._extData, {'conchTest' : 'ext data'})
+
+
+    def test_interface_implementation(self):
+        """
+        It implements the ISFTPServer interface.
+        """
+        self.assertTrue(
+            filetransfer.ISFTPServer.providedBy(self.server.client),
+            "ISFTPServer not provided by %r" % (self.server.client,))
 
 
     def test_openedFileClosedWithConnection(self):
@@ -468,7 +476,7 @@ class FakeConn:
         pass
 
 
-class TestFileTransferClose(unittest.TestCase):
+class FileTransferCloseTests(unittest.TestCase):
 
     if not unix:
         skip = "can't run on non-posix computers"
@@ -570,7 +578,7 @@ class TestFileTransferClose(unittest.TestCase):
 
 
 
-class TestConstants(unittest.TestCase):
+class ConstantsTests(unittest.TestCase):
     """
     Tests for the constants used by the SFTP protocol implementation.
 
@@ -675,7 +683,7 @@ class TestConstants(unittest.TestCase):
 
 
 
-class TestRawPacketData(unittest.TestCase):
+class RawPacketDataTests(unittest.TestCase):
     """
     Tests for L{filetransfer.FileTransferClient} which explicitly craft certain
     less common protocol messages to exercise their handling.

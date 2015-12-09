@@ -5,14 +5,14 @@
 Test HTTP support.
 """
 
+from __future__ import absolute_import, division
+
 import random, cgi, base64
 
 try:
-    from urlparse import (
-        ParseResult as ParseResultBytes, urlparse, urlunsplit, clear_cache)
+    from urlparse import urlparse, urlunsplit, clear_cache
 except ImportError:
-    from urllib.parse import (
-        ParseResultBytes, urlparse, urlunsplit, clear_cache)
+    from urllib.parse import urlparse, urlunsplit, clear_cache
 
 from twisted.python.compat import _PY3, iterbytes, networkString, unicode, intToBytes
 from twisted.python.failure import Failure
@@ -30,7 +30,7 @@ from twisted.web.test.requesthelper import DummyChannel
 
 
 
-class DateTimeTest(unittest.TestCase):
+class DateTimeTests(unittest.TestCase):
     """Test date parsing functions."""
 
     def testRoundtrip(self):
@@ -105,7 +105,7 @@ class ResponseTestMixin(object):
 
 
 
-class HTTP1_0TestCase(unittest.TestCase, ResponseTestMixin):
+class HTTP1_0Tests(unittest.TestCase, ResponseTestMixin):
     requests = (
         b"GET / HTTP/1.0\r\n"
         b"\r\n"
@@ -159,7 +159,7 @@ class HTTP1_0TestCase(unittest.TestCase, ResponseTestMixin):
 
 
 
-class HTTP1_1TestCase(HTTP1_0TestCase):
+class HTTP1_1Tests(HTTP1_0Tests):
 
     requests = (
         b"GET / HTTP/1.1\r\n"
@@ -202,7 +202,7 @@ class HTTP1_1TestCase(HTTP1_0TestCase):
 
 
 
-class HTTP1_1_close_TestCase(HTTP1_0TestCase):
+class HTTP1_1_close_Tests(HTTP1_0Tests):
 
     requests = (
         b"GET / HTTP/1.1\r\n"
@@ -223,7 +223,7 @@ class HTTP1_1_close_TestCase(HTTP1_0TestCase):
 
 
 
-class HTTP0_9TestCase(HTTP1_0TestCase):
+class HTTP0_9Tests(HTTP1_0Tests):
 
     requests = (
         b"GET /\r\n")
@@ -235,7 +235,7 @@ class HTTP0_9TestCase(HTTP1_0TestCase):
         self.assertEqual(response, expectedResponse)
 
 
-class HTTPLoopbackTestCase(unittest.TestCase):
+class HTTPLoopbackTests(unittest.TestCase):
 
     expectedHeaders = {b'request': b'/foo/bar',
                        b'command': b'GET',
@@ -298,7 +298,7 @@ def _prequest(**headers):
 
 
 
-class PersistenceTestCase(unittest.TestCase):
+class PersistenceTests(unittest.TestCase):
     """
     Tests for persistent HTTP connections.
     """
@@ -626,7 +626,7 @@ class ChunkedTransferEncodingTests(unittest.TestCase):
 
 
 
-class ChunkingTestCase(unittest.TestCase):
+class ChunkingTests(unittest.TestCase):
 
     strings = [b"abcv", b"", b"fdfsd423", b"Ffasfas\r\n",
                b"523523\n\rfsdf", b"4234"]
@@ -652,7 +652,7 @@ class ChunkingTestCase(unittest.TestCase):
 
 
 
-class ParsingTestCase(unittest.TestCase):
+class ParsingTests(unittest.TestCase):
     """
     Tests for protocol parsing in L{HTTPChannel}.
     """
@@ -660,23 +660,48 @@ class ParsingTestCase(unittest.TestCase):
         self.didRequest = False
 
 
-    def runRequest(self, httpRequest, requestClass, success=1):
+    def runRequest(self, httpRequest, requestFactory=None, success=True,
+                   channel=None):
+        """
+        Execute a web request based on plain text content.
+
+        @param httpRequest: Content for the request which is processed.
+        @type httpRequest: C{bytes}
+
+        @param requestFactory: 2-argument callable returning a Request.
+        @type requestFactory: C{callable}
+
+        @param success: Value to compare against I{self.didRequest}.
+        @type success: C{bool}
+
+        @param channel: Channel instance over which the request is processed.
+        @type channel: L{HTTPChannel}
+
+        @return: Returns the channel used for processing the request.
+        @rtype: L{HTTPChannel}
+        """
+        if not channel:
+            channel = http.HTTPChannel()
+
+        if requestFactory:
+            channel.requestFactory = requestFactory
+
         httpRequest = httpRequest.replace(b"\n", b"\r\n")
-        b = StringTransport()
-        a = http.HTTPChannel()
-        a.requestFactory = requestClass
-        a.makeConnection(b)
+        transport = StringTransport()
+
+        channel.makeConnection(transport)
         # one byte at a time, to stress it.
         for byte in iterbytes(httpRequest):
-            if a.transport.disconnecting:
+            if channel.transport.disconnecting:
                 break
-            a.dataReceived(byte)
-        a.connectionLost(IOError("all done"))
+            channel.dataReceived(byte)
+        channel.connectionLost(IOError("all done"))
+
         if success:
             self.assertTrue(self.didRequest)
         else:
             self.assertFalse(self.didRequest)
-        return a
+        return channel
 
 
     def test_basicAuth(self):
@@ -803,6 +828,83 @@ class ParsingTestCase(unittest.TestCase):
             b'\r\n')
 
 
+    def test_headersTooBigInitialCommand(self):
+        """
+        Enforces a limit of C{HTTPChannel.totalHeadersSize}
+        on the size of headers received per request starting from initial
+        command line.
+        """
+        channel = http.HTTPChannel()
+        channel.totalHeadersSize = 10
+        httpRequest = b'GET /path/longer/than/10 HTTP/1.1\n'
+
+        channel = self.runRequest(
+            httpRequest=httpRequest, channel=channel, success=False)
+
+        self.assertEqual(
+            channel.transport.value(),
+            b"HTTP/1.1 400 Bad Request\r\n\r\n")
+
+
+    def test_headersTooBigOtherHeaders(self):
+        """
+        Enforces a limit of C{HTTPChannel.totalHeadersSize}
+        on the size of headers received per request counting first line
+        and total headers.
+        """
+        channel = http.HTTPChannel()
+        channel.totalHeadersSize = 40
+        httpRequest = (
+            b'GET /less/than/40 HTTP/1.1\n'
+            b'Some-Header: less-than-40\n'
+            )
+
+        channel = self.runRequest(
+            httpRequest=httpRequest, channel=channel, success=False)
+
+        self.assertEqual(
+            channel.transport.value(),
+            b"HTTP/1.1 400 Bad Request\r\n\r\n")
+
+
+    def test_headersTooBigPerRequest(self):
+        """
+        Enforces total size of headers per individual request and counter
+        is reset at the end of each request.
+        """
+        class SimpleRequest(http.Request):
+            def process(self):
+                self.finish()
+        channel = http.HTTPChannel()
+        channel.totalHeadersSize = 60
+        channel.requestFactory = SimpleRequest
+        httpRequest = (
+            b'GET / HTTP/1.1\n'
+            b'Some-Header: total-less-than-60\n'
+            b'\n'
+            b'GET / HTTP/1.1\n'
+            b'Some-Header: less-than-60\n'
+            b'\n'
+            )
+
+        channel = self.runRequest(
+            httpRequest=httpRequest, channel=channel, success=False)
+
+        self.assertEqual(
+            channel.transport.value(),
+            b'HTTP/1.1 200 OK\r\n'
+            b'Transfer-Encoding: chunked\r\n'
+            b'\r\n'
+            b'0\r\n'
+            b'\r\n'
+            b'HTTP/1.1 200 OK\r\n'
+            b'Transfer-Encoding: chunked\r\n'
+            b'\r\n'
+            b'0\r\n'
+            b'\r\n'
+            )
+
+
     def testCookies(self):
         """
         Test cookies parsing and reading.
@@ -919,7 +1021,11 @@ Content-Type: application/x-www-form-urlencoded
         self.assertEqual(content, [networkString(query)])
 
 
-    def testMissingContentDisposition(self):
+    def test_missingContentDisposition(self):
+        """
+        If the C{Content-Disposition} header is missing, the request is denied
+        as a bad request.
+        """
         req = b'''\
 POST / HTTP/1.0
 Content-Type: multipart/form-data; boundary=AaB03x
@@ -932,11 +1038,71 @@ Content-Transfer-Encoding: quoted-printable
 abasdfg
 --AaB03x--
 '''
-        self.runRequest(req, http.Request, success=False)
+        channel = self.runRequest(req, http.Request, success=False)
+        self.assertEqual(
+            channel.transport.value(),
+            b"HTTP/1.1 400 Bad Request\r\n\r\n")
+
     if _PY3:
-        testMissingContentDisposition.skip = (
-            "Cannot parse multipart/form-data on Python 3.  "
-            "See http://bugs.python.org/issue12411 and #5511.")
+        test_missingContentDisposition.skip = (
+            "cgi.parse_multipart is much more error-tolerant on Python 3.")
+
+
+    def test_multipartProcessingFailure(self):
+        """
+        When the multipart processing fails the client gets a 400 Bad Request.
+        """
+        # The parsing failure is simulated by having a Content-Length that
+        # doesn't fit in a ssize_t.
+        req = b'''\
+POST / HTTP/1.0
+Content-Type: multipart/form-data; boundary=AaB03x
+Content-Length: 103
+
+--AaB03x
+Content-Type: text/plain
+Content-Length: 999999999999999999999999999999999999999999999999999999999999999
+Content-Transfer-Encoding: quoted-printable
+
+abasdfg
+--AaB03x--
+'''
+        channel = self.runRequest(req, http.Request, success=False)
+        self.assertEqual(
+            channel.transport.value(),
+            b"HTTP/1.1 400 Bad Request\r\n\r\n")
+
+
+    def test_multipartFormData(self):
+        """
+        If the request has a Content-Type of C{multipart/form-data}, and the
+        form data is parseable, the form arguments will be added to the
+        request's args.
+        """
+        processed = []
+        class MyRequest(http.Request):
+            def process(self):
+                processed.append(self)
+                self.write(b"done")
+                self.finish()
+        req = b'''\
+POST / HTTP/1.0
+Content-Type: multipart/form-data; boundary=AaB03x
+Content-Length: 149
+
+--AaB03x
+Content-Type: text/plain
+Content-Disposition: form-data; name="text"
+Content-Transfer-Encoding: quoted-printable
+
+abasdfg
+--AaB03x--
+'''
+        channel = self.runRequest(req, MyRequest, success=False)
+        self.assertEqual(channel.transport.value(),
+                         b"HTTP/1.0 200 OK\r\n\r\ndone")
+        self.assertEqual(len(processed), 1)
+        self.assertEqual(processed[0].args, {b"text": [b"abasdfg"]})
 
 
     def test_chunkedEncoding(self):
@@ -1020,7 +1186,7 @@ Hello,
 
 
 
-class QueryArgumentsTestCase(unittest.TestCase):
+class QueryArgumentsTests(unittest.TestCase):
     def testParseqs(self):
         self.assertEqual(
             cgi.parse_qs(b"a=b&d=c;+=f"),
@@ -1124,7 +1290,7 @@ class ClientDriver(http.HTTPClient):
         self.status = status
         self.message = message
 
-class ClientStatusParsing(unittest.TestCase):
+class ClientStatusParsingTests(unittest.TestCase):
     def testBaseline(self):
         c = ClientDriver()
         c.lineReceived(b'HTTP/1.0 201 foo')
@@ -1266,11 +1432,22 @@ class RequestTests(unittest.TestCase, ResponseTestMixin):
         """
         channel = DummyChannel()
         req = http.Request(channel, False)
-        req.setResponseCode(202, "happily accepted")
+        req.setResponseCode(202, b"happily accepted")
         req.write(b'')
         self.assertEqual(
             channel.transport.written.getvalue().splitlines()[0],
             b'(no clientproto yet) 202 happily accepted')
+
+
+    def test_setResponseCodeAndMessageNotBytes(self):
+        """
+        L{http.Request.setResponseCode} accepts C{bytes} for the message
+        parameter and raises L{TypeError} if passed anything else.
+        """
+        channel = DummyChannel()
+        req = http.Request(channel, False)
+        self.assertRaises(TypeError, req.setResponseCode,
+                          202, u"not happily accepted")
 
 
     def test_setResponseCodeAcceptsIntegers(self):
@@ -1350,6 +1527,31 @@ class RequestTests(unittest.TestCase, ResponseTestMixin):
         req = http.Request(DummyChannel(), False)
         req.setHeader(b"test", b"lemur")
         self.assertEqual(req.responseHeaders.getRawHeaders(b"test"), [b"lemur"])
+
+
+    def test_addCookieWithMinimumArguments(self):
+        """
+        Add a Set-Cookie header with just name and value to the response.
+        """
+        req = http.Request(DummyChannel(), False)
+        req.addCookie("foo", "bar")
+        self.assertEqual(req.cookies[0], "foo=bar")
+
+
+    def test_addCookieWithAllArguments(self):
+        """
+        Add a Set-Cookie header with name and value and all the supported
+        options to the response.
+        """
+        req = http.Request(DummyChannel(), False)
+        req.addCookie(
+            "foo", "bar", expires="Fri, 31 Dec 9999 23:59:59 GMT",
+            domain=".example.com", path="/", max_age="31536000",
+            comment="test", secure=True, httpOnly=True)
+        self.assertEqual(req.cookies[0],
+                         "foo=bar; Expires=Fri, 31 Dec 9999 23:59:59 GMT; "
+                         "Domain=.example.com; Path=/; Max-Age=31536000; "
+                         "Comment=test; Secure; HttpOnly")
 
 
     def test_firstWrite(self):
@@ -1849,7 +2051,7 @@ class RequestTests(unittest.TestCase, ResponseTestMixin):
 
 
 
-class MultilineHeadersTestCase(unittest.TestCase):
+class MultilineHeadersTests(unittest.TestCase):
     """
     Tests to exercise handling of multiline headers by L{HTTPClient}.  RFCs 1945
     (HTTP 1.0) and 2616 (HTTP 1.1) state that HTTP message header fields can
@@ -2173,3 +2375,24 @@ class DeprecatedRequestAttributesTests(unittest.TestCase):
                          sub(["category", "message"], warnings[0]))
 
 
+    def test_getClient(self):
+        """
+        L{Request.getClient} is deprecated in favor of resolving the hostname
+        in application code.
+        """
+        channel = DummyChannel()
+        request = http.Request(channel, True)
+        request.gotLength(123)
+        request.requestReceived(b"GET", b"/", b"HTTP/1.1")
+        expected = channel.transport.getPeer().host
+        self.assertEqual(expected, request.getClient())
+        warnings = self.flushWarnings(
+            offendingFunctions=[self.test_getClient])
+
+        self.assertEqual({
+                "category": DeprecationWarning,
+                "message": (
+                    "twisted.web.http.Request.getClient was deprecated "
+                    "in Twisted 15.0.0; please use Twisted Names to "
+                    "resolve hostnames instead")},
+                         sub(["category", "message"], warnings[0]))

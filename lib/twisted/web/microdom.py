@@ -22,8 +22,6 @@ Microdom mainly focuses on working with HTML and XHTML.
 import re
 from cStringIO import StringIO
 
-# create NodeList class
-from types import ListType as NodeList
 from types import StringTypes, UnicodeType
 
 # Twisted Imports
@@ -625,7 +623,7 @@ class Element(Node):
             bext(self.tagName)
 
         j = ''.join
-        for attr, val in self.attributes.iteritems():
+        for attr, val in sorted(self.attributes.items()):
             if isinstance(attr, tuple):
                 ns, key = attr
                 if nsprefixes.has_key(ns):

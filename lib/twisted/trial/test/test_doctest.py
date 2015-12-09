@@ -5,11 +5,13 @@
 Test Twisted's doctest support.
 """
 
+from __future__ import absolute_import, division
+
 from twisted.trial import itrial, runner, unittest, reporter
 from twisted.trial.test import mockdoctest
 
 
-class TestRunners(unittest.SynchronousTestCase):
+class RunnersTests(unittest.SynchronousTestCase):
     """
     Tests for Twisted's doctest support.
     """

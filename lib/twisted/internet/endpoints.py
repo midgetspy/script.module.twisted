@@ -14,40 +14,34 @@ parsed by the L{clientFromString} and L{serverFromString} functions.
 
 from __future__ import division, absolute_import
 
-import socket
 import os
 import re
-
-from zope.interface import implementer, directlyProvides
+import socket
 import warnings
 
-from twisted.python.compat import _PY3
+from socket import AF_INET6, AF_INET
+
+from zope.interface import implementer, directlyProvides
+
 from twisted.internet import interfaces, defer, error, fdesc, threads
-from twisted.internet.protocol import (
-        ClientFactory, Protocol, ProcessProtocol, Factory)
-from twisted.internet.interfaces import IStreamServerEndpointStringParser
-from twisted.internet.interfaces import IStreamClientEndpointStringParser
+from twisted.internet.abstract import isIPv6Address
+from twisted.internet.address import _ProcessAddress, HostnameAddress
+from twisted.internet.interfaces import (
+    IStreamServerEndpointStringParser,
+    IStreamClientEndpointStringParserWithReactor)
+from twisted.internet.protocol import ClientFactory, Factory
+from twisted.internet.protocol import ProcessProtocol, Protocol
+from twisted.internet.stdio import StandardIO, PipeAddress
+from twisted.internet.task import LoopingCall
+from twisted.plugin import IPlugin, getPlugins
+from twisted.python import log
+from twisted.python.compat import nativeString
+from twisted.python.components import proxyForInterface
+from twisted.python.constants import NamedConstant, Names
+from twisted.python.failure import Failure
 from twisted.python.filepath import FilePath
 from twisted.python.systemd import ListenFDs
-from twisted.internet.abstract import isIPv6Address
-from twisted.python.failure import Failure
-from twisted.python import log
-from twisted.internet.address import _ProcessAddress, HostnameAddress
-from twisted.python.components import proxyForInterface
-from socket import AF_INET6, AF_INET
-from twisted.internet.task import LoopingCall
 
-if not _PY3:
-    from twisted.plugin import IPlugin, getPlugins
-    from twisted.internet import stdio
-    from twisted.internet.stdio import PipeAddress
-    from twisted.python.constants import NamedConstant, Names
-else:
-    from zope.interface import Interface
-    class IPlugin(Interface):
-        pass
-    NamedConstant = object
-    Names = object
 
 __all__ = ["clientFromString", "serverFromString",
            "TCP4ServerEndpoint", "TCP6ServerEndpoint",
@@ -58,10 +52,6 @@ __all__ = ["clientFromString", "serverFromString",
            "ProcessEndpoint", "HostnameEndpoint",
            "StandardErrorBehavior", "connectProtocol"]
 
-__all3__ = ["TCP4ServerEndpoint", "TCP6ServerEndpoint",
-            "TCP4ClientEndpoint", "TCP6ClientEndpoint",
-            "SSL4ServerEndpoint", "SSL4ClientEndpoint",
-            "connectProtocol", "HostnameEndpoint"]
 
 
 class _WrappingProtocol(Protocol):
@@ -217,13 +207,16 @@ class _WrappingFactory(ClientFactory):
 
     def buildProtocol(self, addr):
         """
-        Proxy C{buildProtocol} to our C{self._wrappedFactory} or errback
-        the C{self._onConnection} L{Deferred}.
+        Proxy C{buildProtocol} to our C{self._wrappedFactory} or errback the
+        C{self._onConnection} L{Deferred} if the wrapped factory raises an
+        exception or returns C{None}.
 
         @return: An instance of L{_WrappingProtocol} or C{None}
         """
         try:
             proto = self._wrappedFactory.buildProtocol(addr)
+            if proto is None:
+                raise error.NoProtocol()
         except:
             self._onConnection.errback()
         else:
@@ -244,11 +237,17 @@ class _WrappingFactory(ClientFactory):
 class StandardIOEndpoint(object):
     """
     A Standard Input/Output endpoint
+
+    @ivar _stdio: a callable, like L{stdio.StandardIO}, which takes an
+        L{IProtocol} provider and a C{reactor} keyword argument (interface
+        dependent upon your platform).
     """
+
+    _stdio = StandardIO
 
     def __init__(self, reactor):
         """
-        @param reactor: The reactor for the endpoint
+        @param reactor: The reactor for the endpoint.
         """
         self._reactor = reactor
 
@@ -257,40 +256,35 @@ class StandardIOEndpoint(object):
         """
         Implement L{IStreamServerEndpoint.listen} to listen on stdin/stdout
         """
-        return defer.execute(stdio.StandardIO,
-                             stdioProtocolFactory.buildProtocol(PipeAddress()))
+        return defer.execute(self._stdio,
+                             stdioProtocolFactory.buildProtocol(PipeAddress()),
+                             reactor=self._reactor)
 
 
 
-@implementer(interfaces.ITransport)
-class _ProcessEndpointTransport(proxyForInterface(
-                                interfaces.IProcessTransport, '_process')):
+class _IProcessTransportWithConsumerAndProducer(interfaces.IProcessTransport,
+                                                interfaces.IConsumer,
+                                                interfaces.IPushProducer):
     """
-    An L{ITransport} provider for the L{IProtocol} instance passed to the
-    process endpoint.
+    An L{_IProcessTransportWithConsumerAndProducer} combines various interfaces
+    to work around the issue that L{interfaces.IProcessTransport} is
+    incompletely defined and doesn't specify flow-control interfaces, and that
+    L{proxyForInterface} doesn't allow for multiple interfaces.
+    """
+
+
+
+class _ProcessEndpointTransport(
+        proxyForInterface(_IProcessTransportWithConsumerAndProducer,
+                          '_process')):
+    """
+    An L{ITransport}, L{IProcessTransport}, L{IConsumer}, and L{IPushProducer}
+    provider for the L{IProtocol} instance passed to the process endpoint.
 
     @ivar _process: An active process transport which will be used by write
         methods on this object to write data to a child process.
     @type _process: L{interfaces.IProcessTransport} provider
     """
-
-    def write(self, data):
-        """
-        Write to the child process's standard input.
-
-        @param data: The data to write on stdin.
-        """
-        self._process.writeToChild(0, data)
-
-
-    def writeSequence(self, data):
-        """
-        Write a list of strings to child process's stdin.
-
-        @param data: The list of chunks to write on stdin.
-        """
-        for chunk in data:
-            self._process.writeToChild(0, chunk)
 
 
 
@@ -568,7 +562,7 @@ class TCP6ClientEndpoint(object):
         5-tuple L{_GAI_ADDRESS}.
     """
 
-    _getaddrinfo = socket.getaddrinfo
+    _getaddrinfo = staticmethod(socket.getaddrinfo)
     _deferToThread = staticmethod(threads.deferToThread)
     _GAI_ADDRESS = 4
     _GAI_ADDRESS_HOST = 0
@@ -635,7 +629,7 @@ class HostnameEndpoint(object):
 
     @ivar _deferToThread: A hook used for testing deferToThread.
     """
-    _getaddrinfo = socket.getaddrinfo
+    _getaddrinfo = staticmethod(socket.getaddrinfo)
     _deferToThread = staticmethod(threads.deferToThread)
 
     def __init__(self, reactor, host, port, timeout=30, bindAddress=None):
@@ -1058,7 +1052,8 @@ def _parseUNIX(factory, address, mode='666', backlog=50, lockfile=True):
 
 
 def _parseSSL(factory, port, privateKey="server.pem", certKey=None,
-              sslmethod=None, interface='', backlog=50, extraCertChain=None):
+              sslmethod=None, interface='', backlog=50, extraCertChain=None,
+              dhParameters=None):
     """
     Internal parser function for L{_parseServer} to convert the string
     arguments for an SSL (over TCP/IPv4) stream endpoint into the structured
@@ -1090,7 +1085,12 @@ def _parseSSL(factory, port, privateKey="server.pem", certKey=None,
     @param extraCertChain: The path of a file containing one or more
         certificates in PEM format that establish the chain from a root CA to
         the CA that signed your C{certKey}.
-    @type extraCertChain: L{bytes}
+    @type extraCertChain: L{str}
+
+    @param dhParameters: The file name of a file containing parameters that are
+        required for Diffie-Hellman key exchange.  If this is not specified,
+        the forward secret C{DHE} ciphers aren't available for servers.
+    @type dhParameters: L{str}
 
     @return: a 2-tuple of (args, kwargs), describing  the parameters to
         L{IReactorSSL.listenSSL} (or, modulo argument 2, the factory, arguments
@@ -1102,15 +1102,14 @@ def _parseSSL(factory, port, privateKey="server.pem", certKey=None,
     kw = {}
     if sslmethod is not None:
         kw['method'] = getattr(ssl.SSL, sslmethod)
-    else:
-        kw['method'] = ssl.SSL.SSLv23_METHOD
     certPEM = FilePath(certKey).getContent()
     keyPEM = FilePath(privateKey).getContent()
     privateCertificate = ssl.PrivateCertificate.loadPEM(certPEM + keyPEM)
     if extraCertChain is not None:
+        extraCertChain = FilePath(extraCertChain).getContent()
         matches = re.findall(
             r'(-----BEGIN CERTIFICATE-----\n.+?\n-----END CERTIFICATE-----)',
-            FilePath(extraCertChain).getContent(),
+            nativeString(extraCertChain),
             flags=re.DOTALL
         )
         chainCertificates = [ssl.Certificate.loadPEM(chainCertPEM).original
@@ -1122,11 +1121,16 @@ def _parseSSL(factory, port, privateKey="server.pem", certKey=None,
             )
     else:
         chainCertificates = None
+    if dhParameters is not None:
+        dhParameters = ssl.DiffieHellmanParameters.fromFile(
+            FilePath(dhParameters),
+        )
 
     cf = ssl.CertificateOptions(
         privateKey=privateCertificate.privateKey.original,
         certificate=privateCertificate.original,
         extraCertChain=chainCertificates,
+        dhParameters=dhParameters,
         **kw
     )
     return ((int(port), factory, cf),
@@ -1139,7 +1143,7 @@ class _StandardIOParser(object):
     """
     Stream server endpoint string parser for the Standard I/O type.
 
-    @ivar prefix: See L{IStreamClientEndpointStringParser.prefix}.
+    @ivar prefix: See L{IStreamServerEndpointStringParser.prefix}.
     """
     prefix = "stdio"
 
@@ -1165,7 +1169,7 @@ class _SystemdParser(object):
     """
     Stream server endpoint string parser for the I{systemd} endpoint type.
 
-    @ivar prefix: See L{IStreamClientEndpointStringParser.prefix}.
+    @ivar prefix: See L{IStreamServerEndpointStringParser.prefix}.
 
     @ivar _sddaemon: A L{ListenFDs} instance used to translate an index into an
         actual file descriptor.
@@ -1215,7 +1219,7 @@ class _TCP6ServerParser(object):
     """
     Stream server endpoint string parser for the TCP6ServerEndpoint type.
 
-    @ivar prefix: See L{IStreamClientEndpointStringParser.prefix}.
+    @ivar prefix: See L{IStreamServerEndpointStringParser.prefix}.
     """
     prefix = "tcp6"     # Used in _parseServer to identify the plugin with the endpoint type
 
@@ -1284,7 +1288,7 @@ def _tokenize(description):
             current = ''
             ops = nextOps[n]
         elif n == '\\':
-            current += description.next()
+            current += next(description)
         else:
             current += n
     yield _STRING, current
@@ -1406,8 +1410,8 @@ def serverFromString(reactor, description):
     """
     Construct a stream server endpoint from an endpoint description string.
 
-    The format for server endpoint descriptions is a simple string.  It is a
-    prefix naming the type of endpoint, then a colon, then the arguments for
+    The format for server endpoint descriptions is a simple byte string.  It is
+    a prefix naming the type of endpoint, then a colon, then the arguments for
     that endpoint.
 
     For example, you can call it like this to create an endpoint that will
@@ -1425,7 +1429,8 @@ def serverFromString(reactor, description):
     private key and certificate files may be specified by the C{privateKey} and
     C{certKey} arguments::
 
-        serverFromString(reactor, "ssl:443:privateKey=key.pem:certKey=crt.pem")
+        serverFromString(
+            reactor, "ssl:443:privateKey=key.pem:certKey=crt.pem")
 
     If a private key file name (C{privateKey}) isn't provided, a "server.pem"
     file is assumed to exist which contains the private key. If the certificate
@@ -1452,9 +1457,10 @@ def serverFromString(reactor, description):
     @param reactor: The server endpoint will be constructed with this reactor.
 
     @param description: The strports description to parse.
+    @type description: L{str}
 
     @return: A new endpoint which can be used to listen with the parameters
-        given by by C{description}.
+        given by C{description}.
 
     @rtype: L{IStreamServerEndpoint<twisted.internet.interfaces.IStreamServerEndpoint>}
 
@@ -1473,7 +1479,7 @@ def quoteStringArgument(argument):
     backslashes, some care is necessary if, for example, you have a pathname,
     you may be tempted to interpolate into a string like this::
 
-        serverFromString("ssl:443:privateKey=%s" % (myPathName,))
+        serverFromString(reactor, "ssl:443:privateKey=%s" % (myPathName,))
 
     This may appear to work, but will have portability issues (Windows
     pathnames, for example).  Usually you should just construct the appropriate
@@ -1483,7 +1489,7 @@ def quoteStringArgument(argument):
     configuration file which has strports descriptions in it.  To be correct in
     those cases, do this instead::
 
-        serverFromString("ssl:443:privateKey=%s" %
+        serverFromString(reactor, "ssl:443:privateKey=%s" %
                          (quoteStringArgument(myPathName),))
 
     @param argument: The part of the endpoint description string you want to
@@ -1614,7 +1620,6 @@ def _parseClientSSL(*args, **kwargs):
         verify = False
         caCerts = None
     kwargs['sslContextFactory'] = ssl.CertificateOptions(
-        method=ssl.SSL.SSLv23_METHOD,
         certificate=certx509,
         privateKey=privateKey,
         verify=verify,
@@ -1705,7 +1710,8 @@ def clientFromString(reactor, description):
     You can create a UNIX client endpoint with the 'path' argument and optional
     'lockfile' and 'timeout' arguments::
 
-        clientFromString(reactor, "unix:path=/var/foo/bar:lockfile=1:timeout=9")
+        clientFromString(
+            reactor, b"unix:path=/var/foo/bar:lockfile=1:timeout=9")
 
     or, with the path as a positional argument with or without optional
     arguments as in the following 2 examples::
@@ -1714,15 +1720,16 @@ def clientFromString(reactor, description):
         clientFromString(reactor, "unix:/var/foo/bar:lockfile=1:timeout=9")
 
     This function is also extensible; new endpoint types may be registered as
-    L{IStreamClientEndpointStringParser} plugins.  See that interface for more
-    information.
+    L{IStreamClientEndpointStringParserWithReactor} plugins.  See that
+    interface for more information.
 
     @param reactor: The client endpoint will be constructed with this reactor.
 
     @param description: The strports description to parse.
+    @type description: L{str}
 
     @return: A new endpoint which can be used to connect with the parameters
-        given by by C{description}.
+        given by C{description}.
     @rtype: L{IStreamClientEndpoint<twisted.internet.interfaces.IStreamClientEndpoint>}
 
     @since: 10.2
@@ -1730,9 +1737,9 @@ def clientFromString(reactor, description):
     args, kwargs = _parse(description)
     aname = args.pop(0)
     name = aname.upper()
-    for plugin in getPlugins(IStreamClientEndpointStringParser):
+    for plugin in getPlugins(IStreamClientEndpointStringParserWithReactor):
         if plugin.prefix.upper() == name:
-            return plugin.parseStreamClient(*args, **kwargs)
+            return plugin.parseStreamClient(reactor, *args, **kwargs)
     if name not in _clientParsers:
         raise ValueError("Unknown endpoint type: %r" % (aname,))
     kwargs = _clientParsers[name](*args, **kwargs)
@@ -1760,12 +1767,3 @@ def connectProtocol(endpoint, protocol):
         def buildProtocol(self, addr):
             return protocol
     return endpoint.connect(OneShotFactory())
-
-
-
-if _PY3:
-    for name in __all__[:]:
-        if name not in __all3__:
-            __all__.remove(name)
-            del globals()[name]
-    del name, __all3__

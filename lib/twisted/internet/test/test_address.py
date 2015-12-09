@@ -5,10 +5,12 @@ from __future__ import division, absolute_import
 
 import re
 import os
+import socket
 
 from twisted.trial import unittest
-from twisted.internet.address import (
-        IPv4Address, UNIXAddress, IPv6Address, HostnameAddress)
+from twisted.internet.address import IPv4Address, UNIXAddress, IPv6Address
+from twisted.internet.address import HostnameAddress
+from twisted.python.compat import nativeString
 
 try:
     os.symlink
@@ -16,6 +18,13 @@ except AttributeError:
     symlinkSkip = "Platform does not support symlinks"
 else:
     symlinkSkip = None
+
+try:
+    socket.AF_UNIX
+except AttributeError:
+    unixSkip = "Platform doesn't support UNIX sockets."
+else:
+    unixSkip = None
 
 
 class AddressTestCaseMixin(object):
@@ -141,8 +150,8 @@ class HostnameAddressTests(unittest.TestCase, AddressTestCaseMixin):
 
 
 
-class IPv4AddressTCPTestCase(unittest.SynchronousTestCase,
-                             IPv4AddressTestCaseMixin):
+class IPv4AddressTCPTests(unittest.SynchronousTestCase,
+                          IPv4AddressTestCaseMixin):
     def buildAddress(self):
         """
         Create an arbitrary new L{IPv4Address} instance with a C{"TCP"}
@@ -174,8 +183,8 @@ class IPv4AddressTCPTestCase(unittest.SynchronousTestCase,
 
 
 
-class IPv4AddressUDPTestCase(unittest.SynchronousTestCase,
-                             IPv4AddressTestCaseMixin):
+class IPv4AddressUDPTests(unittest.SynchronousTestCase,
+                          IPv4AddressTestCaseMixin):
     def buildAddress(self):
         """
         Create an arbitrary new L{IPv4Address} instance with a C{"UDP"}
@@ -207,7 +216,7 @@ class IPv4AddressUDPTestCase(unittest.SynchronousTestCase,
 
 
 
-class IPv6AddressTestCase(unittest.SynchronousTestCase, AddressTestCaseMixin):
+class IPv6AddressTests(unittest.SynchronousTestCase, AddressTestCaseMixin):
     addressArgSpec = (("type", "%s"), ("host", "%r"), ("port", "%d"))
 
     def buildAddress(self):
@@ -227,7 +236,8 @@ class IPv6AddressTestCase(unittest.SynchronousTestCase, AddressTestCaseMixin):
 
 
 
-class UNIXAddressTestCase(unittest.SynchronousTestCase, AddressTestCaseMixin):
+class UNIXAddressTests(unittest.SynchronousTestCase):
+    skip = unixSkip
     addressArgSpec = (("name", "%r"),)
 
     def setUp(self):
@@ -250,17 +260,26 @@ class UNIXAddressTestCase(unittest.SynchronousTestCase, AddressTestCaseMixin):
         return UNIXAddress(self._otherAddress)
 
 
+    def test_repr(self):
+        """
+        The repr of L{UNIXAddress} returns with the filename that the
+        L{UNIXAddress} is for.
+        """
+        self.assertEqual(repr(self.buildAddress()), "UNIXAddress('%s')" % (
+            nativeString(self._socketAddress)))
+
+
     def test_comparisonOfLinkedFiles(self):
         """
         UNIXAddress objects compare as equal if they link to the same file.
         """
         linkName = self.mktemp()
-        self.fd = open(self._socketAddress, 'w')
-        os.symlink(os.path.abspath(self._socketAddress), linkName)
-        self.assertTrue(
-            UNIXAddress(self._socketAddress) == UNIXAddress(linkName))
-        self.assertTrue(
-            UNIXAddress(linkName) == UNIXAddress(self._socketAddress))
+        with open(self._socketAddress, 'w') as self.fd:
+            os.symlink(os.path.abspath(self._socketAddress), linkName)
+            self.assertEqual(UNIXAddress(self._socketAddress),
+                             UNIXAddress(linkName))
+            self.assertEqual(UNIXAddress(linkName),
+                             UNIXAddress(self._socketAddress))
     test_comparisonOfLinkedFiles.skip = symlinkSkip
 
 
@@ -271,31 +290,18 @@ class UNIXAddressTestCase(unittest.SynchronousTestCase, AddressTestCaseMixin):
         linkName = self.mktemp()
         self.fd = open(self._socketAddress, 'w')
         os.symlink(os.path.abspath(self._socketAddress), linkName)
-        self.assertEqual(
-            hash(UNIXAddress(self._socketAddress)), hash(UNIXAddress(linkName)))
+        self.assertEqual(hash(UNIXAddress(self._socketAddress)),
+                         hash(UNIXAddress(linkName)))
     test_hashOfLinkedFiles.skip = symlinkSkip
 
 
-    def test_bwHackDeprecation(self):
-        """
-        If a value is passed for the C{_bwHack} parameter to L{UNIXAddress},
-        a deprecation warning is emitted.
-        """
-        # Construct this for warning side-effects, disregard the actual object.
-        UNIXAddress(self.mktemp(), _bwHack='UNIX')
 
-        message = (
-            "twisted.internet.address.UNIXAddress._bwHack is deprecated "
-            "since Twisted 11.0")
-        return self.assertDeprecations(self.test_bwHackDeprecation, message)
-
-
-
-class EmptyUNIXAddressTestCase(unittest.SynchronousTestCase,
-                               AddressTestCaseMixin):
+class EmptyUNIXAddressTests(unittest.SynchronousTestCase,
+                            AddressTestCaseMixin):
     """
     Tests for L{UNIXAddress} operations involving a C{None} address.
     """
+    skip = unixSkip
     addressArgSpec = (("name", "%r"),)
 
     def setUp(self):
@@ -305,16 +311,17 @@ class EmptyUNIXAddressTestCase(unittest.SynchronousTestCase,
     def buildAddress(self):
         """
         Create an arbitrary new L{UNIXAddress} instance.  A new instance is
-        created for each call, but always for the same address.
+        created for each call, but always for the same address. This builds it
+        with a fixed address of C{None}.
         """
-        return UNIXAddress(self._socketAddress)
+        return UNIXAddress(None)
 
 
     def buildDifferentAddress(self):
         """
-        Like L{buildAddress}, but with a fixed address of C{None}.
+        Like L{buildAddress}, but with a random temporary directory.
         """
-        return UNIXAddress(None)
+        return UNIXAddress(self._socketAddress)
 
 
     def test_comparisonOfLinkedFiles(self):
@@ -323,12 +330,12 @@ class EmptyUNIXAddressTestCase(unittest.SynchronousTestCase,
         UNIXAddress referring to a symlink.
         """
         linkName = self.mktemp()
-        self.fd = open(self._socketAddress, 'w')
-        os.symlink(os.path.abspath(self._socketAddress), linkName)
-        self.assertTrue(
-            UNIXAddress(self._socketAddress) != UNIXAddress(None))
-        self.assertTrue(
-            UNIXAddress(None) != UNIXAddress(self._socketAddress))
+        with open(self._socketAddress, 'w') as self.fd:
+            os.symlink(os.path.abspath(self._socketAddress), linkName)
+            self.assertNotEqual(UNIXAddress(self._socketAddress),
+                                UNIXAddress(None))
+            self.assertNotEqual(UNIXAddress(None),
+                                UNIXAddress(self._socketAddress))
     test_comparisonOfLinkedFiles.skip = symlinkSkip
 
 
@@ -337,8 +344,20 @@ class EmptyUNIXAddressTestCase(unittest.SynchronousTestCase,
         C{__hash__} can be used to get a hash of an address, even one referring
         to C{None} rather than a real path.
         """
-        addr = self.buildDifferentAddress()
+        addr = self.buildAddress()
         d = {addr: True}
-        self.assertTrue(d[self.buildDifferentAddress()])
+        self.assertTrue(d[self.buildAddress()])
 
 
+    def test_bwHackDeprecation(self):
+        """
+        If a value is passed for the C{_bwHack} parameter to L{UNIXAddress},
+        a deprecation warning is emitted.
+        """
+        # Construct this for warning side-effects, disregard the actual object.
+        UNIXAddress(None, _bwHack='UNIX')
+
+        message = (
+            "twisted.internet.address.UNIXAddress._bwHack is deprecated "
+            "since Twisted 11.0")
+        return self.assertDeprecations(self.test_bwHackDeprecation, message)

@@ -2,10 +2,6 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
-import time
-
-from twisted.internet import reactor, protocol
-
 from twisted.trial import unittest
 from twisted.test.proto_helpers import StringTransport
 
@@ -24,7 +20,7 @@ class TestBufferingProto(mixin.BufferingMixin):
 
 
 
-class BufferingTest(unittest.TestCase):
+class BufferingTests(unittest.TestCase):
     def testBuffering(self):
         p = TestBufferingProto()
         t = p.transport = StringTransport()

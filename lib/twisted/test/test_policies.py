@@ -4,11 +4,12 @@
 """
 Test code for policies.
 """
+
 from __future__ import division, absolute_import
 
 from zope.interface import Interface, implementer, implementedBy
 
-from twisted.python.compat import NativeStringIO, _PY3
+from twisted.python.compat import NativeStringIO
 from twisted.trial import unittest
 from twisted.test.proto_helpers import StringTransport
 from twisted.test.proto_helpers import StringTransportWithDisconnection
@@ -120,7 +121,7 @@ class TestableTimeoutFactory(policies.TimeoutFactory):
 
 
 
-class WrapperTestCase(unittest.TestCase):
+class WrapperTests(unittest.TestCase):
     """
     Tests for L{WrappingFactory} and L{ProtocolWrapper}.
     """
@@ -344,7 +345,7 @@ class WrappingFactory(policies.WrappingFactory):
 
 
 
-class ThrottlingTestCase(unittest.TestCase):
+class ThrottlingTests(unittest.TestCase):
     """
     Tests for L{policies.ThrottlingFactory}.
     """
@@ -406,6 +407,23 @@ class ThrottlingTestCase(unittest.TestCase):
         wrapTServer.deferred.addCallback(_check4)
         wrapTServer.deferred.addCallback(_cleanup)
         return wrapTServer.deferred
+
+
+    def test_writeSequence(self):
+        """
+        L{ThrottlingProtocol.writeSequence} is called on the underlying factory.
+        """
+        server = Server()
+        tServer = TestableThrottlingFactory(task.Clock(), server)
+        protocol = tServer.buildProtocol(
+            address.IPv4Address('TCP', '127.0.0.1', 0))
+        transport = StringTransportWithDisconnection()
+        transport.protocol = protocol
+        protocol.makeConnection(transport)
+
+        protocol.writeSequence([b'bytes'] * 4)
+        self.assertEqual(transport.value(), b"bytesbytesbytesbytes")
+        self.assertEqual(tServer.writtenThisSecond, 20)
 
 
     def test_writeLimit(self):
@@ -480,7 +498,7 @@ class ThrottlingTestCase(unittest.TestCase):
 
 
 
-class TimeoutTestCase(unittest.TestCase):
+class TimeoutFactoryTests(unittest.TestCase):
     """
     Tests for L{policies.TimeoutFactory}.
     """
@@ -621,7 +639,7 @@ class TimeoutTester(protocol.Protocol, policies.TimeoutMixin):
 
 
 
-class TestTimeout(unittest.TestCase):
+class TimeoutMixinTests(unittest.TestCase):
     """
     Tests for L{policies.TimeoutMixin}.
     """
@@ -719,7 +737,7 @@ class TestTimeout(unittest.TestCase):
 
 
 
-class LimitTotalConnectionsFactoryTestCase(unittest.TestCase):
+class LimitTotalConnectionsFactoryTests(unittest.TestCase):
     """Tests for policies.LimitTotalConnectionsFactory"""
     def testConnectionCounting(self):
         # Make a basic factory
@@ -795,7 +813,7 @@ class TestLoggingFactory(policies.TrafficLoggingFactory):
 
 
 
-class LoggingFactoryTestCase(unittest.TestCase):
+class LoggingFactoryTests(unittest.TestCase):
     """
     Tests for L{policies.TrafficLoggingFactory}.
     """

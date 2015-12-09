@@ -66,8 +66,8 @@ import pickle
 import types
 import warnings
 import decimal
+from functools import reduce
 from types import StringType
-from types import UnicodeType
 from types import IntType
 from types import TupleType
 from types import ListType
@@ -85,25 +85,23 @@ import copy
 import datetime
 from types import BooleanType
 
-try:
-    # Filter out deprecation warning for Python >= 2.6
-    warnings.filterwarnings("ignore", category=DeprecationWarning,
-        message="the sets module is deprecated", append=True)
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", category=DeprecationWarning)
     import sets as _sets
-finally:
-    warnings.filters.pop()
 
-
-from zope.interface import implements
+from zope.interface import implementer
 
 # Twisted Imports
+from twisted.python.compat import unicode
 from twisted.python.reflect import namedObject, qual
 from twisted.persisted.crefutil import NotKnown, _Tuple, _InstanceMethod
 from twisted.persisted.crefutil import _DictKeyAndValue, _Dereference
 from twisted.persisted.crefutil import _Container
-from twisted.python.compat import reduce
 
 from twisted.spread.interfaces import IJellyable, IUnjellyable
+
+from twisted.python.deprecate import deprecatedModuleAttribute
+from twisted.python.versions import Version
 
 DictTypes = (DictionaryType,)
 
@@ -129,6 +127,11 @@ tuple_atom = "tuple"                # t
 instance_atom = 'instance'          # i
 frozenset_atom = 'frozenset'
 
+
+deprecatedModuleAttribute(
+    Version("Twisted", 15, 0, 0),
+    "instance_atom is unused within Twisted.",
+    "twisted.spread.jelly", "instance_atom")
 
 # errors
 unpersistable_atom = "unpersistable"# u
@@ -305,12 +308,12 @@ class Unpersistable:
 
 
 
+@implementer(IJellyable)
 class Jellyable:
     """
     Inherit from me to Jelly yourself directly with the `getStateFor'
     convenience method.
     """
-    implements(IJellyable)
 
     def getStateFor(self, jellier):
         return self.__dict__
@@ -328,12 +331,12 @@ class Jellyable:
 
 
 
+@implementer(IUnjellyable)
 class Unjellyable:
     """
     Inherit from me to Unjelly yourself directly with the
     C{setStateFor} convenience method.
     """
-    implements(IUnjellyable)
 
     def setStateFor(self, unjellier, state):
         self.__dict__ = state
@@ -475,7 +478,7 @@ class _Jellier:
                         self.jelly(obj.im_self),
                         self.jelly(obj.im_class)]
 
-            elif UnicodeType and objType is UnicodeType:
+            elif objType is unicode:
                 return ['unicode', obj.encode('UTF-8')]
             elif objType is NoneType:
                 return ['None']
@@ -679,10 +682,7 @@ class _Unjellier:
 
 
     def _unjelly_unicode(self, exp):
-        if UnicodeType:
-            return unicode(exp[0], "UTF-8")
-        else:
-            return Unpersistable("Could not unpersist unicode: %s" % (exp[0],))
+        return unicode(exp[0], "UTF-8")
 
 
     def _unjelly_decimal(self, exp):
@@ -868,6 +868,20 @@ class _Unjellier:
 
 
     def _unjelly_instance(self, rest):
+        """
+        (internal) Unjelly an instance.
+
+        Called to handle the deprecated I{instance} token.
+
+        @param rest: The s-expression representing the instance.
+
+        @return: The unjellied instance.
+        """
+        warnings.warn_explicit(
+            "Unjelly support for the instance atom is deprecated since "
+            "Twisted 15.0.0.  Upgrade peer for modern instance support.",
+            category=DeprecationWarning, filename="", lineno=0)
+
         clz = self.unjelly(rest[0])
         if type(clz) is not types.ClassType:
             raise InsecureJelly("Instance found with non-class class.")
@@ -1013,8 +1027,7 @@ class SecurityOptions:
                              "date": 1,
                              "timedelta": 1,
                              "NoneType": 1}
-        if hasattr(types, 'UnicodeType'):
-            self.allowedTypes['unicode'] = 1
+        self.allowedTypes['unicode'] = 1
         self.allowedTypes['decimal'] = 1
         self.allowedTypes['set'] = 1
         self.allowedTypes['frozenset'] = 1

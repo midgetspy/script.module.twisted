@@ -23,8 +23,7 @@ except ImportError:
 if ssl and not ssl.supported:
     ssl = None
 
-from twisted.internet.defer import Deferred, maybeDeferred
-from twisted.python import runtime
+from twisted.internet.defer import Deferred
 if not _PY3:
     from twisted.python import util
 
@@ -346,7 +345,7 @@ class ThreePhaseEventTests(unittest.TestCase):
 
 
 
-class SystemEventTestCase(unittest.TestCase):
+class SystemEventTests(unittest.TestCase):
     """
     Tests for the reactor's implementation of the C{fireSystemEvent},
     C{addSystemEventTrigger}, and C{removeSystemEventTrigger} methods of the
@@ -650,7 +649,7 @@ class SystemEventTestCase(unittest.TestCase):
 
 
 
-class TimeTestCase(unittest.TestCase):
+class TimeTests(unittest.TestCase):
     """
     Tests for the IReactorTime part of the reactor.
     """
@@ -791,52 +790,6 @@ class TimeTestCase(unittest.TestCase):
         finally:
             d.cancel()
 
-    def testCallLaterOrder(self):
-        l = []
-        l2 = []
-        def f(x):
-            l.append(x)
-        def f2(x):
-            l2.append(x)
-        def done():
-            self.assertEqual(l, range(20))
-        def done2():
-            self.assertEqual(l2, range(10))
-
-        for n in range(10):
-            reactor.callLater(0, f, n)
-        for n in range(10):
-            reactor.callLater(0, f, n+10)
-            reactor.callLater(0.1, f2, n)
-
-        reactor.callLater(0, done)
-        reactor.callLater(0.1, done2)
-        d = Deferred()
-        reactor.callLater(0.2, d.callback, None)
-        return d
-
-    testCallLaterOrder.todo = "See bug 1396"
-    testCallLaterOrder.skip = "Trial bug, todo doesn't work! See bug 1397"
-    def testCallLaterOrder2(self):
-        # This time destroy the clock resolution so that it fails reliably
-        # even on systems that don't have a crappy clock resolution.
-
-        def seconds():
-            return int(time.time())
-
-        base_original = base.seconds
-        runtime_original = runtime.seconds
-        base.seconds = seconds
-        runtime.seconds = seconds
-
-        def cleanup(x):
-            runtime.seconds = runtime_original
-            base.seconds = base_original
-            return x
-        return maybeDeferred(self.testCallLaterOrder).addBoth(cleanup)
-
-    testCallLaterOrder2.todo = "See bug 1396"
-    testCallLaterOrder2.skip = "Trial bug, todo doesn't work! See bug 1397"
 
     def testDelayedCallStringification(self):
         # Mostly just make sure str() isn't going to raise anything for
@@ -875,7 +828,7 @@ class TimeTestCase(unittest.TestCase):
         self.assertEqual(dc.getTime(), 13)
 
 
-class CallFromThreadTests(unittest.TestCase):
+class CallFromThreadStopsAndWakeUpTests(unittest.TestCase):
     def testWakeUp(self):
         # Make sure other threads can wake up the reactor
         d = Deferred()
@@ -917,7 +870,7 @@ class CallFromThreadTests(unittest.TestCase):
         return d
 
 
-class DelayedTestCase(unittest.TestCase):
+class DelayedTests(unittest.TestCase):
     def setUp(self):
         self.finished = 0
         self.counter = 0
@@ -1004,6 +957,7 @@ class DelayedTestCase(unittest.TestCase):
 
 
 resolve_helper = """
+from __future__ import print_function
 import %(reactor)s
 %(reactor)s.install()
 from twisted.internet import reactor
@@ -1015,10 +969,10 @@ class Foo:
     def start(self):
         reactor.resolve('localhost').addBoth(self.done)
     def done(self, res):
-        print 'done', res
+        print('done', res)
         reactor.stop()
     def failed(self):
-        print 'failed'
+        print('failed')
         self.timer = None
         reactor.stop()
 f = Foo()
@@ -1044,7 +998,7 @@ class ChildResolveProtocol(protocol.ProcessProtocol):
         self.onCompletion = None
 
 
-class Resolve(unittest.TestCase):
+class ResolveTests(unittest.TestCase):
     def testChildResolve(self):
         # I've seen problems with reactor.run under gtk2reactor. Spawn a
         # child which just does reactor.resolve after the reactor has
@@ -1070,23 +1024,24 @@ class Resolve(unittest.TestCase):
             (reason, output, error) = result
             # If the output is "done 127.0.0.1\n" we don't really care what
             # else happened.
-            output = ''.join(output)
-            if output != 'done 127.0.0.1\n':
+            output = b''.join(output)
+            if output != b'done 127.0.0.1\n':
                 self.fail((
                     "The child process failed to produce the desired results:\n"
                     "   Reason for termination was: %r\n"
                     "   Output stream was: %r\n"
-                    "   Error stream was: %r\n") % (reason.getErrorMessage(), output, ''.join(error)))
+                    "   Error stream was: %r\n") % (reason.getErrorMessage(), output, b''.join(error)))
 
         helperDeferred.addCallback(cbFinished)
         return helperDeferred
 
 if not interfaces.IReactorProcess(reactor, None):
-    Resolve.skip = "cannot run test: reactor doesn't support IReactorProcess"
+    ResolveTests.skip = (
+        "cannot run test: reactor doesn't support IReactorProcess")
 
 
 
-class CallFromThreadTestCase(unittest.TestCase):
+class CallFromThreadTests(unittest.TestCase):
     """
     Task scheduling from threads tests.
     """
@@ -1168,7 +1123,7 @@ class MyFactory(protocol.Factory):
     protocol = MyProtocol
 
 
-class ProtocolTestCase(unittest.TestCase):
+class ProtocolTests(unittest.TestCase):
 
     def testFactory(self):
         factory = MyFactory()
@@ -1259,7 +1214,7 @@ class ReentrantProducer(DummyProducer):
 
 
 
-class TestProducer(unittest.TestCase):
+class ProducerTests(unittest.TestCase):
     """
     Test abstract.FileDescriptor's consumer interface.
     """
@@ -1388,7 +1343,7 @@ class TestProducer(unittest.TestCase):
 
 
 
-class PortStringification(unittest.TestCase):
+class PortStringificationTests(unittest.TestCase):
     if interfaces.IReactorTCP(reactor, None) is not None:
         def testTCP(self):
             p = reactor.listenTCP(0, protocol.ServerFactory())
@@ -1416,4 +1371,3 @@ class PortStringification(unittest.TestCase):
 
         if _PY3:
             testSSL.skip = ("Re-enable once the Python 3 SSL port is done.")
-

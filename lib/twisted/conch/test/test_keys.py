@@ -26,7 +26,7 @@ from twisted.python import randbytes
 from twisted.trial import unittest
 
 
-class HelpersTestCase(unittest.TestCase):
+class HelpersTests(unittest.TestCase):
 
     if Crypto is None:
         skip = "cannot run w/o PyCrypto"
@@ -89,18 +89,106 @@ class HelpersTestCase(unittest.TestCase):
         return key, sig
 
 
-    def test_objectType(self):
+
+class ObjectTypeTests(unittest.TestCase):
+    """
+    Unit tests for the objectType method.
+    """
+
+    if Crypto is None:
+        skip = "Cannot run without PyCrypto."
+
+
+    def getRSAKey(self):
         """
-        Test that objectType, returns the correct type for objects.
+        Return a PyCrypto RSA key to support the tests.
+
+        @return: The RSA key to support the tests.
+        @rtype: C{Crypto.PublicKey.RSA}
         """
-        self.assertEqual(keys.objectType(keys.Key.fromString(
-            keydata.privateRSA_openssh).keyObject), 'ssh-rsa')
-        self.assertEqual(keys.objectType(keys.Key.fromString(
-            keydata.privateDSA_openssh).keyObject), 'ssh-dss')
+        # Use lazy import as PyCrypto will be deprecated.
+        from Crypto.PublicKey import RSA
+
+        return RSA.construct((
+            keydata.RSAData['n'],
+            keydata.RSAData['e'],
+            keydata.RSAData['d'],
+            ))
+
+
+    def getDSAKey(self):
+        """
+        Return a PyCrypto DSA key to support the tests.
+
+        @return: The DSA key to support the tests.
+        @rtype: C{Crypto.PublicKey.DSA}
+        """
+        # Use lazy import as PyCrypto will be deprecated.
+        from Crypto.PublicKey import DSA
+
+        return DSA.construct((
+            keydata.DSAData['y'],
+            keydata.DSAData['g'],
+            keydata.DSAData['p'],
+            keydata.DSAData['q'],
+            keydata.DSAData['x'],
+            ))
+
+
+    def checkDeprecation(self):
+        """
+        Check that we have a deprecation warning for C{objectType}.
+        """
+        warnings = self.flushWarnings()
+        self.assertEqual(1, len(warnings))
+        self.assertIs(DeprecationWarning, warnings[0]['category'])
+        self.assertEqual(
+            'twisted.conch.ssh.keys.objectType was deprecated in '
+            'Twisted 15.5.0',
+            warnings[0]['message'])
+
+
+    def test_objectType_rsa(self):
+        """
+        C{ssh-rsa} is the type of the RSA keys.
+        """
+        key = self.getRSAKey()
+
+        self.assertEqual(keys.objectType(key), 'ssh-rsa')
+        self.checkDeprecation()
+
+
+    def test_objectType_dsa(self):
+        """
+        C{ssh-dss} is the type of the DSA keys.
+        """
+        key = self.getDSAKey()
+
+        self.assertEqual(keys.objectType(key), 'ssh-dss')
+        self.checkDeprecation()
+
+
+    def test_objectKey_none(self):
+        """
+        A BadKeyError is raised when getting the type of C{None}.
+        """
         self.assertRaises(keys.BadKeyError, keys.objectType, None)
+        self.checkDeprecation()
 
 
-class KeyTestCase(unittest.TestCase):
+    def test_deprecation(self):
+        """
+        It is deprecated.
+        """
+        key = self.getRSAKey()
+
+        keys.objectType(key)
+
+        self.checkDeprecation()
+
+
+
+class KeyTests(unittest.TestCase):
 
     if Crypto is None:
         skip = "cannot run w/o PyCrypto"
@@ -117,10 +205,11 @@ class KeyTestCase(unittest.TestCase):
             '\xf2\xad\xda\xeb(\x97\x03S\x08\x81\xc7\xb1\xb7\xe6\xe3'
             '\xcd*\xd4\xbd\xc0wt\xf7y\xcd\xf0\xb7\x7f\xfb\x1e>\xf9r'
             '\x8c\xba')
-        self.dsaSignature = ('\x00\x00\x00\x07ssh-dss\x00\x00'
-            '\x00(\x18z)H\x8a\x1b\xc6\r\xbbq\xa2\xd7f\x7f$\xa7\xbf'
-            '\xe8\x87\x8c\x88\xef\xd9k\x1a\x98\xdd{=\xdec\x18\t\xe3'
-            '\x87\xa9\xc72h\x95')
+        self.dsaSignature = (
+            '\x00\x00\x00\x07ssh-dss\x00\x00\x00(?\xc7\xeb\x86;\xd5TFA\xb4\xdf'
+            '\x0c\xc4E@4,d\xbc\t\xd9\xae\xdd[\xed-\x82nQ\x8cf\x9b\xe8\xe1jrg'
+            '\x84p<'
+        )
         self.oldSecureRandom = randbytes.secureRandom
         randbytes.secureRandom = lambda x: '\xff' * x
         self.keyFile = self.mktemp()

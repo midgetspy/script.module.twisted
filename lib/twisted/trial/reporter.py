@@ -16,16 +16,15 @@ import time
 import warnings
 import unittest as pyunit
 
+from collections import OrderedDict
+
 from zope.interface import implementer
 
-from twisted.python import _reflectpy3 as reflect, log
+from twisted.python import reflect, log
 from twisted.python.components import proxyForInterface
 from twisted.python.failure import Failure
 from twisted.python.util import untilConcludes
-try:
-    from collections import OrderedDict
-except ImportError:
-    from twisted.python.util import OrderedDict
+from twisted.python.compat import _PY3, items
 from twisted.trial import itrial, util
 
 try:
@@ -74,6 +73,7 @@ class TestResult(pyunit.TestResult, object):
         self.successes = 0
         self._timings = []
 
+
     def __repr__(self):
         return ('<%s run=%d errors=%d failures=%d todos=%d dones=%d skips=%d>'
                 % (reflect.qual(self.__class__), self.testsRun,
@@ -81,8 +81,10 @@ class TestResult(pyunit.TestResult, object):
                    len(self.expectedFailures), len(self.skips),
                    len(self.unexpectedSuccesses)))
 
+
     def _getTime(self):
         return time.time()
+
 
     def _getFailure(self, error):
         """
@@ -91,6 +93,7 @@ class TestResult(pyunit.TestResult, object):
         if isinstance(error, tuple):
             return Failure(error[1], error[0], error[2])
         return error
+
 
     def startTest(self, test):
         """
@@ -101,6 +104,7 @@ class TestResult(pyunit.TestResult, object):
         super(TestResult, self).startTest(test)
         self._testStarted = self._getTime()
 
+
     def stopTest(self, test):
         """
         This must be called after the given test is completed.
@@ -109,6 +113,7 @@ class TestResult(pyunit.TestResult, object):
         """
         super(TestResult, self).stopTest(test)
         self._lastTime = self._getTime() - self._testStarted
+
 
     def addFailure(self, test, fail):
         """
@@ -119,6 +124,7 @@ class TestResult(pyunit.TestResult, object):
         """
         self.failures.append((test, self._getFailure(fail)))
 
+
     def addError(self, test, error):
         """
         Report an error that occurred while running the given test.
@@ -127,6 +133,7 @@ class TestResult(pyunit.TestResult, object):
         @type error: L{Failure} or L{tuple}
         """
         self.errors.append((test, self._getFailure(error)))
+
 
     def addSkip(self, test, reason):
         """
@@ -141,8 +148,10 @@ class TestResult(pyunit.TestResult, object):
         """
         self.skips.append((test, reason))
 
+
     def addUnexpectedSuccess(self, test, todo):
-        """Report that the given test succeeded against expectations.
+        """
+        Report that the given test succeeded against expectations.
 
         In Trial, tests can be marked 'todo'. That is, they are expected to
         fail.  When a test that is expected to fail instead succeeds, it should
@@ -154,8 +163,10 @@ class TestResult(pyunit.TestResult, object):
         # XXX - 'todo' should just be a string
         self.unexpectedSuccesses.append((test, todo))
 
+
     def addExpectedFailure(self, test, error, todo):
-        """Report that the given test failed, and was expected to do so.
+        """
+        Report that the given test failed, and was expected to do so.
 
         In Trial, tests can be marked 'todo'. That is, they are expected to
         fail.
@@ -167,31 +178,29 @@ class TestResult(pyunit.TestResult, object):
         # XXX - 'todo' should just be a string
         self.expectedFailures.append((test, error, todo))
 
+
     def addSuccess(self, test):
-        """Report that the given test succeeded.
+        """
+        Report that the given test succeeded.
 
         @type test: L{pyunit.TestCase}
         """
         self.successes += 1
 
-    def upDownError(self, method, error, warn, printStatus):
-        warnings.warn("upDownError is deprecated in Twisted 8.0.",
-                      category=DeprecationWarning, stacklevel=3)
 
-    def cleanupErrors(self, errs):
-        """Report an error that occurred during the cleanup between tests.
+    def wasSuccessful(self):
         """
-        warnings.warn("Cleanup errors are actual errors. Use addError. "
-                      "Deprecated in Twisted 8.0",
-                      category=DeprecationWarning, stacklevel=2)
+        Report whether or not this test suite was successful or not.
 
-    def startSuite(self, name):
-        warnings.warn("startSuite deprecated in Twisted 8.0",
-                      category=DeprecationWarning, stacklevel=2)
+        The behaviour of this method changed in L{pyunit} in Python 3.4 to
+        fail if there are any errors, failures, or unexpected successes.
+        Previous to 3.4, it was only if there were errors or failures. This
+        method implements the old behaviour for backwards compatibility reasons,
+        checking just for errors and failures.
 
-    def endSuite(self, name):
-        warnings.warn("endSuite deprecated in Twisted 8.0",
-                      category=DeprecationWarning, stacklevel=2)
+        @rtype: L{bool}
+        """
+        return len(self.failures) == len(self.errors) == 0
 
 
     def done(self):
@@ -341,7 +350,7 @@ class Reporter(TestResult):
 
     @ivar _publisher: The log publisher which will be observed for warning
         events.
-    @type _publisher: L{LogPublisher} (or another type sufficiently similar)
+    @type _publisher: L{twisted.python.log.LogPublisher}
     """
 
     _separator = '-' * 79
@@ -380,20 +389,6 @@ class Reporter(TestResult):
             if key not in self._warningCache:
                 self._warningCache.add(key)
                 self._stream.write('%s:%s: %s: %s\n' % key)
-
-
-    def stream(self):
-        warnings.warn("stream is deprecated in Twisted 8.0.",
-                      category=DeprecationWarning, stacklevel=2)
-        return self._stream
-    stream = property(stream)
-
-
-    def separator(self):
-        warnings.warn("separator is deprecated in Twisted 8.0.",
-                      category=DeprecationWarning, stacklevel=2)
-        return self._separator
-    separator = property(separator)
 
 
     def startTest(self, test):
@@ -438,12 +433,6 @@ class Reporter(TestResult):
             self._write(self._formatFailureTraceback(error))
 
 
-    def write(self, format, *args):
-        warnings.warn("write is deprecated in Twisted 8.0.",
-                      category=DeprecationWarning, stacklevel=2)
-        self._write(format, *args)
-
-
     def _write(self, format, *args):
         """
         Safely write to the reporter's stream.
@@ -458,12 +447,6 @@ class Reporter(TestResult):
         else:
             self._stream.write(s)
         untilConcludes(self._stream.flush)
-
-
-    def writeln(self, format, *args):
-        warnings.warn("writeln is deprecated in Twisted 8.0.",
-                      category=DeprecationWarning, stacklevel=2)
-        self._writeln(format, *args)
 
 
     def _writeln(self, format, *args):
@@ -552,6 +535,15 @@ class Reporter(TestResult):
                      ("runWithWarningsSuppressed", "utils"))
 
         twoFrames = ((firstMethod, firstFile), (secondMethod, secondFile))
+
+        if _PY3:
+            # On PY3, we have an extra frame which is reraising the exception
+            for frame in newFrames:
+                frameFile = os.path.splitext(os.path.basename(frame[1]))[0]
+                if frameFile == "compat" and frame[0] == "reraise":
+                    # If it's in the compat module and is reraise, BLAM IT
+                    newFrames.pop(newFrames.index(frame))
+
         if twoFrames == syncCase:
             newFrames = newFrames[2:]
         elif twoFrames == asyncCase:
@@ -606,7 +598,7 @@ class Reporter(TestResult):
             outcome = content[1:]
             key = formatter(*outcome)
             groups.setdefault(key, []).append(case)
-        return groups.items()
+        return items(groups)
 
 
     def _printResults(self, flavor, errors, formatter):
@@ -639,15 +631,6 @@ class Reporter(TestResult):
         return ret
 
 
-    def printErrors(self):
-        """
-        Print all of the non-success results in full to the stream.
-        """
-        warnings.warn("printErrors is deprecated in Twisted 8.0.",
-                      category=DeprecationWarning, stacklevel=2)
-        self._printErrors()
-
-
     def _printErrors(self):
         """
         Print all of the non-success results to the stream in full.
@@ -678,15 +661,6 @@ class Reporter(TestResult):
             summaries.append('successes=%d' % (self.successes,))
         summary = (summaries and ' (' + ', '.join(summaries) + ')') or ''
         return summary
-
-
-    def printSummary(self):
-        """
-        Print a line summarising the test results to the stream.
-        """
-        warnings.warn("printSummary is deprecated in Twisted 8.0.",
-                      category=DeprecationWarning, stacklevel=2)
-        self._printSummary()
 
 
     def _printSummary(self):

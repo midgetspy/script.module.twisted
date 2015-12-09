@@ -8,6 +8,8 @@ Test cases for Twisted component architecture.
 
 from __future__ import division, absolute_import
 
+from functools import wraps
+
 from zope.interface import Interface, implementer, Attribute
 from zope.interface.adapter import AdapterRegistry
 
@@ -105,7 +107,7 @@ class RegistryUsingMixin(object):
 
 
 
-class ComponentizedTestCase(unittest.SynchronousTestCase, RegistryUsingMixin):
+class ComponentizedTests(unittest.SynchronousTestCase, RegistryUsingMixin):
     """
     Simple test case for caching in Componentized.
     """
@@ -143,7 +145,6 @@ class ComponentizedTestCase(unittest.SynchronousTestCase, RegistryUsingMixin):
     def testMultiAdapter(self):
         c = CComp()
         co1 = c.getComponent(ITest)
-        co2 = c.getComponent(ITest2)
         co3 = c.getComponent(ITest3)
         co4 = c.getComponent(ITest4)
         self.assertIdentical(None, co4)
@@ -227,7 +228,7 @@ class ComponentizedTestCase(unittest.SynchronousTestCase, RegistryUsingMixin):
 
 
 
-class AdapterTestCase(unittest.SynchronousTestCase):
+class AdapterTests(unittest.SynchronousTestCase):
     """Test adapters."""
 
     def testAdapterGetComponent(self):
@@ -307,7 +308,7 @@ class DoubleXAdapter:
         return cmp(self.num, other.num)
 
 
-class TestMetaInterface(RegistryUsingMixin, unittest.SynchronousTestCase):
+class MetaInterfaceTests(RegistryUsingMixin, unittest.SynchronousTestCase):
     def testBasic(self):
         components.registerAdapter(MetaAdder, MetaNumber, IMeta)
         n = MetaNumber(1)
@@ -327,7 +328,7 @@ class TestMetaInterface(RegistryUsingMixin, unittest.SynchronousTestCase):
         self.assertEqual(('x!', 'x!'), xx.xx())
 
 
-class RegistrationTestCase(RegistryUsingMixin, unittest.SynchronousTestCase):
+class RegistrationTests(RegistryUsingMixin, unittest.SynchronousTestCase):
     """
     Tests for adapter registration.
     """
@@ -654,6 +655,24 @@ class ProxyForInterfaceTests(unittest.SynchronousTestCase):
         proxy.yay()
         self.assertEqual(proxy.yay(), 2)
         self.assertEqual(yayable.yays, 2)
+
+
+    def test_decoratedProxyMethod(self):
+        """
+        Methods of the class created from L{proxyForInterface} can be used with
+        the decorator-helper L{functools.wraps}.
+        """
+        base = proxyForInterface(IProxiedInterface)
+        class klass(base):
+            @wraps(base.yay)
+            def yay(self):
+                self.original.yays += 1
+                return base.yay(self)
+
+        original = Yayable()
+        yayable = klass(original)
+        yayable.yay()
+        self.assertEqual(2, original.yays)
 
 
     def test_proxyAttribute(self):

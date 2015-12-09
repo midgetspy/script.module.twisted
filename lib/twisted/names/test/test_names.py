@@ -1,4 +1,3 @@
-# -*- test-case-name: twisted.names.test.test_names -*-
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
@@ -9,13 +8,14 @@ Test cases for twisted.names.
 import socket, operator, copy
 from StringIO import StringIO
 from functools import partial, reduce
+from struct import pack
 
 from twisted.trial import unittest
 
 from twisted.internet import reactor, defer, error
 from twisted.internet.defer import succeed
 from twisted.names import client, server, common, authority, dns
-from twisted.names.dns import Message
+from twisted.names.dns import SOA, Message, RRHeader, Record_A, Record_SOA
 from twisted.names.error import DomainError
 from twisted.names.client import Resolver
 from twisted.names.secondary import (
@@ -141,7 +141,7 @@ my_domain_com = NoFileAuthority(
     )
 
 
-class ServerDNSTestCase(unittest.TestCase):
+class ServerDNSTests(unittest.TestCase):
     """
     Test cases for DNS server and client.
     """
@@ -212,7 +212,7 @@ class ServerDNSTestCase(unittest.TestCase):
         return querying
 
 
-    def testAddressRecord1(self):
+    def test_addressRecord1(self):
         """Test simple DNS 'A' record queries"""
         return self.namesTest(
             self.resolver.lookupAddress('test-domain.com'),
@@ -220,7 +220,7 @@ class ServerDNSTestCase(unittest.TestCase):
         )
 
 
-    def testAddressRecord2(self):
+    def test_addressRecord2(self):
         """Test DNS 'A' record queries with multiple answers"""
         return self.namesTest(
             self.resolver.lookupAddress('host.test-domain.com'),
@@ -228,7 +228,7 @@ class ServerDNSTestCase(unittest.TestCase):
         )
 
 
-    def testAddressRecord3(self):
+    def test_addressRecord3(self):
         """Test DNS 'A' record queries with edge cases"""
         return self.namesTest(
             self.resolver.lookupAddress('host-two.test-domain.com'),
@@ -236,7 +236,7 @@ class ServerDNSTestCase(unittest.TestCase):
         )
 
 
-    def testAuthority(self):
+    def test_authority(self):
         """Test DNS 'SOA' record queries"""
         return self.namesTest(
             self.resolver.lookupAuthority('test-domain.com'),
@@ -256,7 +256,7 @@ class ServerDNSTestCase(unittest.TestCase):
              dns.Record_A(b"0.255.0.255", ttl=19283784)])
 
 
-    def testNameserver(self):
+    def test_nameserver(self):
         """Test DNS 'NS' record queries"""
         return self.namesTest(
             self.resolver.lookupNameservers('test-domain.com'),
@@ -264,14 +264,14 @@ class ServerDNSTestCase(unittest.TestCase):
         )
 
 
-    def testHINFO(self):
+    def test_HINFO(self):
         """Test DNS 'HINFO' record queries"""
         return self.namesTest(
             self.resolver.lookupHostInfo('test-domain.com'),
             [dns.Record_HINFO(os='Linux', cpu='A Fast One, Dontcha know', ttl=19283784)]
         )
 
-    def testPTR(self):
+    def test_PTR(self):
         """Test DNS 'PTR' record queries"""
         return self.namesTest(
             self.resolver.lookupPointer('123.93.84.28.in-addr.arpa'),
@@ -279,14 +279,14 @@ class ServerDNSTestCase(unittest.TestCase):
         )
 
 
-    def testCNAME(self):
+    def test_CNAME(self):
         """Test DNS 'CNAME' record queries"""
         return self.namesTest(
             self.resolver.lookupCanonicalName('test-domain.com'),
             [dns.Record_CNAME('canonical.name.com', ttl=19283784)]
         )
 
-    def testMB(self):
+    def test_MB(self):
         """Test DNS 'MB' record queries"""
         return self.namesTest(
             self.resolver.lookupMailBox('test-domain.com'),
@@ -294,7 +294,7 @@ class ServerDNSTestCase(unittest.TestCase):
         )
 
 
-    def testMG(self):
+    def test_MG(self):
         """Test DNS 'MG' record queries"""
         return self.namesTest(
             self.resolver.lookupMailGroup('test-domain.com'),
@@ -302,7 +302,7 @@ class ServerDNSTestCase(unittest.TestCase):
         )
 
 
-    def testMR(self):
+    def test_MR(self):
         """Test DNS 'MR' record queries"""
         return self.namesTest(
             self.resolver.lookupMailRename('test-domain.com'),
@@ -310,7 +310,7 @@ class ServerDNSTestCase(unittest.TestCase):
         )
 
 
-    def testMINFO(self):
+    def test_MINFO(self):
         """Test DNS 'MINFO' record queries"""
         return self.namesTest(
             self.resolver.lookupMailboxInfo('test-domain.com'),
@@ -318,14 +318,14 @@ class ServerDNSTestCase(unittest.TestCase):
         )
 
 
-    def testSRV(self):
+    def test_SRV(self):
         """Test DNS 'SRV' record queries"""
         return self.namesTest(
             self.resolver.lookupService('http.tcp.test-domain.com'),
             [dns.Record_SRV(257, 16383, 43690, 'some.other.place.fool', ttl=19283784)]
         )
 
-    def testAFSDB(self):
+    def test_AFSDB(self):
         """Test DNS 'AFSDB' record queries"""
         return self.namesTest(
             self.resolver.lookupAFSDatabase('test-domain.com'),
@@ -333,7 +333,7 @@ class ServerDNSTestCase(unittest.TestCase):
         )
 
 
-    def testRP(self):
+    def test_RP(self):
         """Test DNS 'RP' record queries"""
         return self.namesTest(
             self.resolver.lookupResponsibility('test-domain.com'),
@@ -341,7 +341,7 @@ class ServerDNSTestCase(unittest.TestCase):
         )
 
 
-    def testTXT(self):
+    def test_TXT(self):
         """Test DNS 'TXT' record queries"""
         return self.namesTest(
             self.resolver.lookupText('test-domain.com'),
@@ -361,7 +361,7 @@ class ServerDNSTestCase(unittest.TestCase):
         )
 
 
-    def testWKS(self):
+    def test_WKS(self):
         """Test DNS 'WKS' record queries"""
         return self.namesTest(
             self.resolver.lookupWellKnownServices('test-domain.com'),
@@ -369,7 +369,7 @@ class ServerDNSTestCase(unittest.TestCase):
         )
 
 
-    def testSomeRecordsWithTTLs(self):
+    def test_someRecordsWithTTLs(self):
         result_soa = copy.copy(my_soa)
         result_soa.ttl = my_soa.expire
         return self.namesTest(
@@ -382,14 +382,14 @@ class ServerDNSTestCase(unittest.TestCase):
             )
 
 
-    def testAAAA(self):
+    def test_AAAA(self):
         """Test DNS 'AAAA' record queries (IPv6)"""
         return self.namesTest(
             self.resolver.lookupIPV6Address('test-domain.com'),
             [dns.Record_AAAA('AF43:5634:1294:AFCB:56AC:48EF:34C3:01FF', ttl=19283784)]
         )
 
-    def testA6(self):
+    def test_A6(self):
         """Test DNS 'A6' record queries (IPv6)"""
         return self.namesTest(
             self.resolver.lookupAddress6('test-domain.com'),
@@ -414,7 +414,7 @@ class ServerDNSTestCase(unittest.TestCase):
         )
 
 
-    def testSimilarZonesDontInterfere(self):
+    def test_similarZonesDontInterfere(self):
         """Tests that unrelated zones don't mess with each other."""
         return self.namesTest(
             self.resolver.lookupAddress("anothertest-domain.com"),
@@ -434,86 +434,17 @@ class ServerDNSTestCase(unittest.TestCase):
 
 
 
-class DNSServerFactoryTests(unittest.TestCase):
-    """
-    Tests for L{server.DNSServerFactory}.
-    """
-    def _messageReceivedTest(self, methodName, message):
-        """
-        Assert that the named method is called with the given message when
-        it is passed to L{DNSServerFactory.messageReceived}.
-        """
-        # Make it appear to have some queries so that
-        # DNSServerFactory.allowQuery allows it.
-        message.queries = [None]
-
-        receivedMessages = []
-        def fakeHandler(message, protocol, address):
-            receivedMessages.append((message, protocol, address))
-
-        class FakeProtocol(object):
-            def writeMessage(self, message):
-                pass
-
-        protocol = FakeProtocol()
-        factory = server.DNSServerFactory(None)
-        setattr(factory, methodName, fakeHandler)
-        factory.messageReceived(message, protocol)
-        self.assertEqual(receivedMessages, [(message, protocol, None)])
-
-
-    def test_notifyMessageReceived(self):
-        """
-        L{DNSServerFactory.messageReceived} passes messages with an opcode
-        of C{OP_NOTIFY} on to L{DNSServerFactory.handleNotify}.
-        """
-        # RFC 1996, section 4.5
-        opCode = 4
-        self._messageReceivedTest('handleNotify', Message(opCode=opCode))
-
-
-    def test_updateMessageReceived(self):
-        """
-        L{DNSServerFactory.messageReceived} passes messages with an opcode
-        of C{OP_UPDATE} on to L{DNSServerFactory.handleOther}.
-
-        This may change if the implementation ever covers update messages.
-        """
-        # RFC 2136, section 1.3
-        opCode = 5
-        self._messageReceivedTest('handleOther', Message(opCode=opCode))
-
-
-    def test_connectionTracking(self):
-        """
-        The C{connectionMade} and C{connectionLost} methods of
-        L{DNSServerFactory} cooperate to keep track of all
-        L{DNSProtocol} objects created by a factory which are
-        connected.
-        """
-        protoA, protoB = object(), object()
-        factory = server.DNSServerFactory()
-        factory.connectionMade(protoA)
-        self.assertEqual(factory.connections, [protoA])
-        factory.connectionMade(protoB)
-        self.assertEqual(factory.connections, [protoA, protoB])
-        factory.connectionLost(protoA)
-        self.assertEqual(factory.connections, [protoB])
-        factory.connectionLost(protoB)
-        self.assertEqual(factory.connections, [])
-
-
-class HelperTestCase(unittest.TestCase):
-    def testSerialGenerator(self):
+class HelperTests(unittest.TestCase):
+    def test_serialGenerator(self):
         f = self.mktemp()
         a = authority.getSerial(f)
         for i in range(20):
             b = authority.getSerial(f)
-            self.failUnless(a < b)
+            self.assertTrue(a < b)
             a = b
 
 
-class AXFRTest(unittest.TestCase):
+class AXFRTests(unittest.TestCase):
     def setUp(self):
         self.results = None
         self.d = defer.Deferred()
@@ -547,7 +478,7 @@ class AXFRTest(unittest.TestCase):
         # hooray they all have the same message format
         return dns.Message(id=999, answer=1, opCode=0, recDes=0, recAv=1, auth=1, rCode=0, trunc=0, maxSize=0)
 
-    def testBindAndTNamesStyle(self):
+    def test_bindAndTNamesStyle(self):
         # Bind style = One big single message
         m = self._makeMessage()
         m.queries = [dns.Query('fooby.com', dns.AXFR, dns.IN)]
@@ -558,7 +489,7 @@ class AXFRTest(unittest.TestCase):
     def _gotResults(self, result):
         self.results = result
 
-    def testDJBStyle(self):
+    def test_DJBStyle(self):
         # DJB style = message per record
         records = self.records[:]
         while records:
@@ -570,14 +501,14 @@ class AXFRTest(unittest.TestCase):
 
 
 
-class ResolvConfHandling(unittest.TestCase):
-    def testMissing(self):
+class ResolvConfHandlingTests(unittest.TestCase):
+    def test_missing(self):
         resolvConf = self.mktemp()
         r = client.Resolver(resolv=resolvConf)
         self.assertEqual(r.dynServers, [('127.0.0.1', 53)])
         r._parseCall.cancel()
 
-    def testEmpty(self):
+    def test_empty(self):
         resolvConf = self.mktemp()
         fObj = file(resolvConf, 'w')
         fObj.close()
@@ -894,9 +825,9 @@ class AdditionalProcessingTests(unittest.TestCase):
 
 
 
-class NoInitialResponseTestCase(unittest.TestCase):
+class NoInitialResponseTests(unittest.TestCase):
 
-    def test_no_answer(self):
+    def test_noAnswer(self):
         """
         If a request returns a L{dns.NS} response, but we can't connect to the
         given server, the request fails with the error returned at connection.
@@ -1042,3 +973,50 @@ class SecondaryAuthorityTests(unittest.TestCase):
 
         self.assertEqual(
             [dns.Query('example.com', dns.AXFR, dns.IN)], msg.queries)
+
+
+    def test_lookupAddress(self):
+        """
+        L{SecondaryAuthority.lookupAddress} returns a L{Deferred} that fires
+        with the I{A} records the authority has cached from the primary.
+        """
+        secondary = SecondaryAuthority.fromServerAddressAndDomain(
+            (b'192.168.1.2', 1234), b'example.com')
+        secondary._reactor = reactor = MemoryReactorClock()
+
+        secondary.transfer()
+
+        host, port, factory, timeout, bindAddress = reactor.tcpClients.pop(0)
+
+        proto = factory.buildProtocol((host, port))
+        transport = StringTransport()
+        proto.makeConnection(transport)
+
+        query = Message(answer=1, auth=1)
+        query.decode(StringIO(transport.value()[2:]))
+
+        # Generate a response with some data we can check.
+        soa = Record_SOA(
+            mname=b'ns1.example.com',
+            rname='admin.example.com',
+            serial=123456,
+            refresh=3600,
+            minimum=4800,
+            expire=7200,
+            retry=9600,
+            ttl=12000,
+            )
+        a = Record_A(b'192.168.1.2', ttl=0)
+        answer = Message(id=query.id, answer=1, auth=1)
+        answer.answers.extend([
+                RRHeader(b'example.com', type=SOA, payload=soa),
+                RRHeader(b'example.com', payload=a),
+                RRHeader(b'example.com', type=SOA, payload=soa),
+                ])
+
+        data = answer.toStr()
+        proto.dataReceived(pack('!H', len(data)) + data)
+
+        result = self.successResultOf(secondary.lookupAddress('example.com'))
+        self.assertEqual((
+                [RRHeader(b'example.com', payload=a, auth=True)], [], []), result)

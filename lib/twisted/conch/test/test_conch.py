@@ -5,7 +5,7 @@
 import os, sys, socket
 from itertools import count
 
-from zope.interface import implements
+from zope.interface import implementer
 
 from twisted.cred import portal
 from twisted.internet import reactor, defer, protocol
@@ -33,9 +33,27 @@ from twisted.conch.test.keydata import publicDSA_openssh, privateDSA_openssh
 from twisted.conch.test.test_ssh import Crypto, pyasn1
 try:
     from twisted.conch.test.test_ssh import ConchTestServerFactory, \
-        ConchTestPublicKeyChecker
+        conchTestPublicKeyChecker
 except ImportError:
     pass
+
+
+
+class FakeStdio(object):
+    """
+    A fake for testing L{twisted.conch.scripts.conch.SSHSession.eofReceived} and
+    L{twisted.conch.scripts.cftp.SSHSession.eofReceived}.
+
+    @ivar writeConnLost: A flag which records whether L{loserWriteConnection}
+        has been called.
+    """
+    writeConnLost = False
+
+    def loseWriteConnection(self):
+        """
+        Record the call to loseWriteConnection.
+        """
+        self.writeConnLost = True
 
 
 
@@ -51,12 +69,6 @@ class StdioInteractingSessionTests(unittest.TestCase):
         L{twisted.conch.scripts.conch.SSHSession.eofReceived} loses the
         write half of its stdio connection.
         """
-        class FakeStdio:
-            writeConnLost = False
-
-            def loseWriteConnection(self):
-                self.writeConnLost = True
-
         stdio = FakeStdio()
         channel = StdioInteractingSession()
         channel.stdio = stdio
@@ -299,7 +311,7 @@ class ConchServerSetupMixin:
         """
         realm = self.realmFactory()
         p = portal.Portal(realm)
-        p.registerChecker(ConchTestPublicKeyChecker())
+        p.registerChecker(conchTestPublicKeyChecker())
         factory = ConchTestServerFactory()
         factory.portal = p
         return factory
@@ -313,6 +325,8 @@ class ConchServerSetupMixin:
                                              interface="127.0.0.1")
         self.echoServer = reactor.listenTCP(0, EchoFactory())
         self.echoPort = self.echoServer.getHost().port
+        self.echoServerV6 = reactor.listenTCP(0, EchoFactory(), interface="::1")
+        self.echoPortV6 = self.echoServerV6.getHost().port
 
 
     def tearDown(self):
@@ -324,7 +338,8 @@ class ConchServerSetupMixin:
             self.conchFactory.proto.transport.loseConnection()
         return defer.gatherResults([
                 defer.maybeDeferred(self.conchServer.stopListening),
-                defer.maybeDeferred(self.echoServer.stopListening)])
+                defer.maybeDeferred(self.echoServer.stopListening),
+                defer.maybeDeferred(self.echoServerV6.stopListening)])
 
 
 
@@ -381,6 +396,11 @@ class ForwardingMixin(ConchServerSetupMixin):
 
 
 
+# Conventionally there is a separate adapter object which provides ISession for
+# the user, but making the user provide ISession directly works too. This isn't
+# a full implementation of ISession though, just enough to make these tests
+# pass.
+@implementer(ISession)
 class RekeyAvatar(ConchUser):
     """
     This avatar implements a shell which sends 60 numbered lines to whatever
@@ -389,12 +409,6 @@ class RekeyAvatar(ConchUser):
     60 lines is selected as being enough to send more than 2kB of traffic, the
     amount the client is configured to initiate a rekey after.
     """
-    # Conventionally there is a separate adapter object which provides ISession
-    # for the user, but making the user provide ISession directly works too.
-    # This isn't a full implementation of ISession though, just enough to make
-    # these tests pass.
-    implements(ISession)
-
     def __init__(self):
         ConchUser.__init__(self)
         self.channelLookup['session'] = SSHSession
@@ -506,15 +520,86 @@ class OpenSSHClientMixin:
 
 
 
-class OpenSSHClientForwardingTestCase(ForwardingMixin, OpenSSHClientMixin,
+class OpenSSHKeyExchangeTestCase(ConchServerSetupMixin, OpenSSHClientMixin,
+                                 unittest.TestCase):
+    """
+    Tests L{SSHTransportBase}'s key exchange algorithm compatibility with
+    OpenSSH.
+    """
+
+    def assertExecuteWithKexAlgorithm(self, keyExchangeAlgo):
+        """
+        Call execute() method of L{OpenSSHClientMixin} with an ssh option that
+        forces the exclusive use of the key exchange algorithm specified by
+        keyExchangeAlgo
+
+        @type keyExchangeAlgo: C{str}
+        @param keyExchangeAlgo: The key exchange algorithm to use
+
+        @return: L{defer.Deferred}
+        """
+        d = self.execute('echo hello', ConchTestOpenSSHProcess(),
+                         '-oKexAlgorithms=' + keyExchangeAlgo)
+        return d.addCallback(self.assertEqual, 'hello\n')
+
+
+    def test_DH_GROUP1(self):
+        """
+        The diffie-hellman-group1-sha1 key exchange algorithm is compatible
+        with OpenSSH.
+        """
+        return self.assertExecuteWithKexAlgorithm(
+            'diffie-hellman-group1-sha1')
+
+
+    def test_DH_GROUP14(self):
+        """
+        The diffie-hellman-group14-sha1 key exchange algorithm is compatible
+        with OpenSSH.
+        """
+        return self.assertExecuteWithKexAlgorithm(
+            'diffie-hellman-group14-sha1')
+
+
+    def test_DH_GROUP_EXCHANGE_SHA1(self):
+        """
+        The diffie-hellman-group-exchange-sha1 key exchange algorithm is
+        compatible with OpenSSH.
+        """
+        return self.assertExecuteWithKexAlgorithm(
+            'diffie-hellman-group-exchange-sha1')
+
+
+    def test_DH_GROUP_EXCHANGE_SHA256(self):
+        """
+        The diffie-hellman-group-exchange-sha256 key exchange algorithm is
+        compatible with OpenSSH.
+        """
+        return self.assertExecuteWithKexAlgorithm(
+            'diffie-hellman-group-exchange-sha256')
+
+
+
+class OpenSSHClientForwardingTests(ForwardingMixin, OpenSSHClientMixin,
                                       unittest.TestCase):
     """
     Connection forwarding tests run against the OpenSSL command line client.
     """
+    def test_localToRemoteForwardingV6(self):
+        """
+        Forwarding of arbitrary IPv6 TCP connections via SSH.
+        """
+        localPort = self._getFreePort()
+        process = ConchTestForwardingProcess(localPort, 'test\n')
+        d = self.execute('', process,
+                         sshArgs='-N -L%i:[::1]:%i'
+                         % (localPort, self.echoPortV6))
+        d.addCallback(self.assertEqual, 'test\n')
+        return d
 
 
 
-class OpenSSHClientRekeyTestCase(RekeyTestsMixin, OpenSSHClientMixin,
+class OpenSSHClientRekeyTests(RekeyTestsMixin, OpenSSHClientMixin,
                                  unittest.TestCase):
     """
     Rekeying tests run against the OpenSSL command line client.
@@ -522,7 +607,7 @@ class OpenSSHClientRekeyTestCase(RekeyTestsMixin, OpenSSHClientMixin,
 
 
 
-class CmdLineClientTestCase(ForwardingMixin, unittest.TestCase):
+class CmdLineClientTests(ForwardingMixin, unittest.TestCase):
     """
     Connection forwarding tests run against the Conch command line client.
     """

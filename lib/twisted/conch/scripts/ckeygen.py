@@ -16,7 +16,7 @@ if getpass.getpass == getpass.unix_getpass:
         reload(getpass)
 
 from twisted.conch.ssh import keys
-from twisted.python import filepath, log, usage, randbytes
+from twisted.python import failure, filepath, log, usage, randbytes
 
 
 
@@ -74,11 +74,9 @@ def run():
 
 
 def handleError():
-    from twisted.python import failure
     global exitStatus
     exitStatus = 2
     log.err(failure.Failure())
-    reactor.stop()
     raise
 
 
@@ -87,7 +85,7 @@ def generateRSAkey(options):
     from Crypto.PublicKey import RSA
     print 'Generating public/private rsa key pair.'
     key = RSA.generate(int(options['bits']), randbytes.secureRandom)
-    _saveKey(key, options)
+    _saveKey(key, options, 'rsa')
 
 
 
@@ -95,7 +93,7 @@ def generateDSAkey(options):
     from Crypto.PublicKey import DSA
     print 'Generating public/private dsa key pair.'
     key = DSA.generate(int(options['bits']), randbytes.secureRandom)
-    _saveKey(key, options)
+    _saveKey(key, options, 'dsa')
 
 
 
@@ -108,7 +106,6 @@ def printFingerprint(options):
     try:
         key = keys.Key.fromFile(options['filename'])
         obj = key.keyObject
-        string = key.blob()
         print '%s %s %s' % (
             obj.size() + 1,
             key.fingerprint(),
@@ -183,17 +180,32 @@ def displayPublicKey(options):
 
 
 
-def _saveKey(key, options):
+def _saveKey(key, options, keyTypeName):
+    """
+    Persist a PyCrypto key on local filesystem.
+
+    @param key: Key which is persisted on local filesystem.
+    @type key: C{Crypto.PublicKey} implementation.
+
+    @param options:
+    @type options: C{dict}
+
+    @param keyTypeName: Name of the type for the passed C{key}.
+    @type keyTypeName: C{str}
+    """
     if not options['filename']:
-        kind = keys.objectType(key)
-        kind = {'ssh-rsa':'rsa','ssh-dss':'dsa'}[kind]
-        filename = os.path.expanduser('~/.ssh/id_%s'%kind)
-        options['filename'] = raw_input('Enter file in which to save the key (%s): '%filename).strip() or filename
+        defaultPath = os.path.expanduser(u'~/.ssh/id_%s' % (keyTypeName,))
+        newPath = raw_input(
+            'Enter file in which to save the key (%s): ' % (defaultPath,))
+
+        options['filename'] = newPath.strip() or defaultPath
+
     if os.path.exists(options['filename']):
-        print '%s already exists.' % options['filename']
+        print '%s already exists.' % (options['filename'],)
         yn = raw_input('Overwrite (y/n)? ')
         if yn[0].lower() != 'y':
             sys.exit()
+
     if options.get('no-passphrase'):
         options['pass'] = b''
     elif not options['pass']:
@@ -215,8 +227,8 @@ def _saveKey(key, options):
     filepath.FilePath(options['filename'] + '.pub').setContent(
         keyObj.public().toString('openssh', comment))
 
-    print 'Your identification has been saved in %s' % options['filename']
-    print 'Your public key has been saved in %s.pub' % options['filename']
+    print 'Your identification has been saved in %s' % (options['filename'],)
+    print 'Your public key has been saved in %s.pub' % (options['filename'],)
     print 'The key fingerprint is:'
     print keyObj.fingerprint()
 

@@ -36,7 +36,7 @@ from zope.interface.adapter import AdapterRegistry
 
 # twisted imports
 from twisted.python.compat import NativeStringIO
-from twisted.python import _reflectpy3 as reflect
+from twisted.python import reflect
 
 
 
@@ -363,14 +363,18 @@ class _ProxiedClassMethod(object):
 
     @ivar methodName: the name of the method which this should invoke when
         called.
-    @type methodName: C{str}
+    @type methodName: L{str}
+
+    @ivar __name__: The name of the method being proxied (the same as
+        C{methodName}).
+    @type __name__: L{str}
 
     @ivar originalAttribute: name of the attribute of the proxy where the
         original object is stored.
-    @type orginalAttribute: C{str}
+    @type orginalAttribute: L{str}
     """
     def __init__(self, methodName, originalAttribute):
-        self.methodName = methodName
+        self.methodName = self.__name__ = methodName
         self.originalAttribute = originalAttribute
 
 

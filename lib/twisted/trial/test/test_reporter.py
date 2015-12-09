@@ -6,12 +6,15 @@
 """
 Tests for L{twisted.trial.reporter}.
 """
-from __future__ import division
+from __future__ import absolute_import, division
 
-import errno, sys, os, re, StringIO
+import errno
+import os
+import re
+import sys
+
 from inspect import getmro
 
-from twisted.internet.utils import suppressWarnings
 from twisted.python import log
 from twisted.python.failure import Failure
 from twisted.trial import itrial, unittest, runner, reporter, util
@@ -19,6 +22,16 @@ from twisted.trial.reporter import _ExitWrapper, UncleanWarningsReporterWrapper
 from twisted.trial.test import erroneous
 from twisted.trial.unittest import makeTodo, SkipTest, Todo
 from twisted.trial.test import sample
+
+from twisted.python.compat import NativeStringIO, _PY3
+
+if _PY3:
+    from io import BytesIO
+else:
+    # On Python 2, we want regular old StringIO, because otherwise subunit
+    # complains
+    from StringIO import StringIO as BytesIO
+
 
 
 class BrokenStream(object):
@@ -47,7 +60,7 @@ class BrokenStream(object):
 
 class StringTest(unittest.SynchronousTestCase):
     def stringComparison(self, expect, output):
-        output = filter(None, output)
+        output = list(filter(None, output))
         self.failUnless(len(expect) <= len(output),
                         "Must have more observed than expected"
                         "lines %d < %d" % (len(output), len(expect)))
@@ -67,7 +80,7 @@ class StringTest(unittest.SynchronousTestCase):
                                 % (exp,))
 
 
-class TestTestResult(unittest.SynchronousTestCase):
+class TestResultTests(unittest.SynchronousTestCase):
     def setUp(self):
         self.result = reporter.TestResult()
 
@@ -75,7 +88,8 @@ class TestTestResult(unittest.SynchronousTestCase):
         # pyunit passes an exc_info tuple directly to addError
         try:
             raise RuntimeError('foo')
-        except RuntimeError, excValue:
+        except RuntimeError as e:
+            excValue = e
             self.result.addError(self, sys.exc_info())
         failure = self.result.errors[0][1]
         self.assertEqual(excValue, failure.value)
@@ -85,25 +99,26 @@ class TestTestResult(unittest.SynchronousTestCase):
         # pyunit passes an exc_info tuple directly to addFailure
         try:
             raise self.failureException('foo')
-        except self.failureException, excValue:
+        except self.failureException as e:
+            excValue = e
             self.result.addFailure(self, sys.exc_info())
         failure = self.result.failures[0][1]
         self.assertEqual(excValue, failure.value)
         self.assertEqual(self.failureException, failure.type)
 
 
-class TestReporterRealtime(TestTestResult):
+class ReporterRealtimeTests(TestResultTests):
     def setUp(self):
-        output = StringIO.StringIO()
+        output = NativeStringIO()
         self.result = reporter.Reporter(output, realtime=True)
 
 
-class TestErrorReporting(StringTest):
+class ErrorReportingTests(StringTest):
     doubleSeparator = re.compile(r'^=+$')
 
     def setUp(self):
         self.loader = runner.TestLoader()
-        self.output = StringIO.StringIO()
+        self.output = NativeStringIO()
         self.result = reporter.Reporter(self.output)
 
     def getOutput(self, suite):
@@ -143,7 +158,8 @@ class TestErrorReporting(StringTest):
         reported in the output stream with the I{FAIL} tag along with a summary
         of what failure was reported and the ID of the test.
         """
-        suite = self.loader.loadMethod(erroneous.TestRegularFail.test_fail)
+        suite = self.loader.loadByName(
+            "twisted.trial.test.erroneous.TestRegularFail.test_fail")
         output = self.getOutput(suite).splitlines()
         match = [
             self.doubleSeparator,
@@ -190,6 +206,10 @@ class TestErrorReporting(StringTest):
         """
         test = erroneous.DelayedCall('testHiddenException')
         output = self.getOutput(test).splitlines()
+        if _PY3:
+            errorQual = RuntimeError.__qualname__
+        else:
+            errorQual = "exceptions.RuntimeError"
         match = [
             self.doubleSeparator,
             '[FAIL]',
@@ -208,26 +228,26 @@ class TestErrorReporting(StringTest):
             re.compile(r'^\s+.*'),
             re.compile('^\s+File .*erroneous\.py", line \d+, in go'),
             re.compile('^\s+raise RuntimeError\(self.hiddenExceptionMsg\)'),
-            'exceptions.RuntimeError: something blew up',
+            errorQual + ': something blew up',
             'twisted.trial.test.erroneous.DelayedCall.testHiddenException']
         self.stringComparison(match, output)
 
 
 
-class TestUncleanWarningWrapperErrorReporting(TestErrorReporting):
+class UncleanWarningWrapperErrorReportingTests(ErrorReportingTests):
     """
     Tests that the L{UncleanWarningsReporterWrapper} can sufficiently proxy
     IReporter failure and error reporting methods to a L{reporter.Reporter}.
     """
     def setUp(self):
         self.loader = runner.TestLoader()
-        self.output = StringIO.StringIO()
+        self.output = NativeStringIO()
         self.result = UncleanWarningsReporterWrapper(
             reporter.Reporter(self.output))
 
 
 
-class TracebackHandling(unittest.SynchronousTestCase):
+class TracebackHandlingTests(unittest.SynchronousTestCase):
 
     def getErrorFrames(self, test):
         """
@@ -238,7 +258,7 @@ class TracebackHandling(unittest.SynchronousTestCase):
 
         @return: The C{list} of frames trimmed.
         """
-        stream = StringIO.StringIO()
+        stream = NativeStringIO()
         result = reporter.Reporter(stream)
         test.run(result)
         bads = result.failures + result.errors
@@ -298,7 +318,7 @@ class TracebackHandling(unittest.SynchronousTestCase):
                          [('test_exception', 'twisted/trial/test/erroneous')])
 
 
-class FormatFailures(StringTest):
+class FormatFailuresTests(StringTest):
     def setUp(self):
         try:
             raise RuntimeError('foo')
@@ -308,7 +328,7 @@ class FormatFailures(StringTest):
             ['foo', 'foo/bar.py', 5, [('x', 5)], [('y', 'orange')]],
             ['qux', 'foo/bar.py', 10, [('a', 'two')], [('b', 'MCMXCIX')]]
             ]
-        self.stream = StringIO.StringIO()
+        self.stream = NativeStringIO()
         self.result = reporter.Reporter(self.stream)
 
     def test_formatDefault(self):
@@ -343,9 +363,9 @@ exceptions.TypeError: iterable argument required
         self.assertEqual(self.f.frames, frames)
 
 
-class PyunitTestNames(unittest.SynchronousTestCase):
+class PyunitNamesTests(unittest.SynchronousTestCase):
     def setUp(self):
-        self.stream = StringIO.StringIO()
+        self.stream = NativeStringIO()
         self.test = sample.PyunitTest('test_foo')
 
     def test_verboseReporter(self):
@@ -414,7 +434,7 @@ class PyunitTestNames(unittest.SynchronousTestCase):
 
 
 
-class TestDirtyReactor(unittest.SynchronousTestCase):
+class DirtyReactorTests(unittest.SynchronousTestCase):
     """
     The trial script has an option to treat L{DirtyReactorAggregateError}s as
     warnings, as a migration tool for test authors. It causes a wrapper to be
@@ -425,8 +445,8 @@ class TestDirtyReactor(unittest.SynchronousTestCase):
     def setUp(self):
         self.dirtyError = Failure(
             util.DirtyReactorAggregateError(['foo'], ['bar']))
-        self.output = StringIO.StringIO()
-        self.test = TestDirtyReactor('test_errorByDefault')
+        self.output = NativeStringIO()
+        self.test = DirtyReactorTests('test_errorByDefault')
 
 
     def test_errorByDefault(self):
@@ -485,10 +505,10 @@ class TestDirtyReactor(unittest.SynchronousTestCase):
 
 
 
-class TrialTestNames(unittest.SynchronousTestCase):
+class TrialNamesTests(unittest.SynchronousTestCase):
 
     def setUp(self):
-        self.stream = StringIO.StringIO()
+        self.stream = NativeStringIO()
         self.test = sample.FooTest('test_foo')
 
     def test_verboseReporter(self):
@@ -516,12 +536,12 @@ class TrialTestNames(unittest.SynchronousTestCase):
         self.assertEqual(output, "test_foo")
 
 
-class TestSkip(unittest.SynchronousTestCase):
+class SkipTests(unittest.SynchronousTestCase):
     """
     Tests for L{reporter.Reporter}'s handling of skips.
     """
     def setUp(self):
-        self.stream = StringIO.StringIO()
+        self.stream = NativeStringIO()
         self.result = reporter.Reporter(self.stream)
         self.test = sample.FooTest('test_foo')
 
@@ -583,21 +603,21 @@ class TestSkip(unittest.SynchronousTestCase):
         """
         try:
             1/0
-        except Exception, e:
+        except Exception as e:
             error = e
         self.result.addSkip(self.test, error)
         self.result.done()
         output = '\n'.join(self.stream.getvalue().splitlines()[3:5]).strip()
-        self.assertEqual(output, str(e))
+        self.assertEqual(output, str(error))
 
 
-class UncleanWarningSkipTest(TestSkip):
+class UncleanWarningSkipTests(SkipTests):
     """
     Tests for skips on a L{reporter.Reporter} wrapped by an
     L{UncleanWarningsReporterWrapper}.
     """
     def setUp(self):
-        TestSkip.setUp(self)
+        SkipTests.setUp(self)
         self.result = UncleanWarningsReporterWrapper(self.result)
 
     def _getSkips(self, result):
@@ -609,13 +629,13 @@ class UncleanWarningSkipTest(TestSkip):
 
 
 
-class TodoTest(unittest.SynchronousTestCase):
+class TodoTests(unittest.SynchronousTestCase):
     """
     Tests for L{reporter.Reporter}'s handling of todos.
     """
 
     def setUp(self):
-        self.stream = StringIO.StringIO()
+        self.stream = NativeStringIO()
         self.result = reporter.Reporter(self.stream)
         self.test = sample.FooTest('test_foo')
 
@@ -667,7 +687,7 @@ class TodoTest(unittest.SynchronousTestCase):
     def test_summary(self):
         """
         The reporter's C{printSummary} method should print the number of
-        expected failures that occured.
+        expected failures that occurred.
         """
         self.result.addExpectedFailure(self.test, Failure(Exception()),
                                        makeTodo('some reason'))
@@ -708,23 +728,23 @@ class TodoTest(unittest.SynchronousTestCase):
         """
         try:
             1/0
-        except Exception, e:
+        except Exception as e:
             error = e
         self.result.addExpectedFailure(self.test, Failure(error),
                                        makeTodo("todo!"))
         self.result.done()
         output = '\n'.join(self.stream.getvalue().splitlines()[3:]).strip()
-        self.assertTrue(str(e) in output)
+        self.assertTrue(str(error) in output)
 
 
 
-class UncleanWarningTodoTest(TodoTest):
+class UncleanWarningTodoTests(TodoTests):
     """
     Tests for L{UncleanWarningsReporterWrapper}'s handling of todos.
     """
 
     def setUp(self):
-        TodoTest.setUp(self)
+        TodoTests.setUp(self)
         self.result = UncleanWarningsReporterWrapper(self.result)
 
 
@@ -747,7 +767,7 @@ class UncleanWarningTodoTest(TodoTest):
 
 class MockColorizer:
     """
-    Used by TestTreeReporter to make sure that output is colored correctly.
+    Used by TreeReporterTests to make sure that output is colored correctly.
     """
 
     def __init__(self, stream):
@@ -759,10 +779,10 @@ class MockColorizer:
 
 
 
-class TestTreeReporter(unittest.SynchronousTestCase):
+class TreeReporterTests(unittest.SynchronousTestCase):
     def setUp(self):
         self.test = sample.FooTest('test_foo')
-        self.stream = StringIO.StringIO()
+        self.stream = NativeStringIO()
         self.result = reporter.TreeReporter(self.stream)
         self.result._colorizer = MockColorizer(self.stream)
         self.log = self.result._colorizer.log
@@ -773,39 +793,6 @@ class TestTreeReporter(unittest.SynchronousTestCase):
         except ZeroDivisionError:
             f = Failure()
         return f
-
-    def test_cleanupError(self):
-        """
-        Run cleanupErrors and check that the output is correct, and colored
-        correctly.
-        """
-        f = self.makeError()
-        self.result.cleanupErrors(f)
-        color, text = self.log[0]
-        self.assertEqual(color.strip(), self.result.ERROR)
-        self.assertEqual(text.strip(), 'cleanup errors')
-        color, text = self.log[1]
-        self.assertEqual(color.strip(), self.result.ERROR)
-        self.assertEqual(text.strip(), '[ERROR]')
-    test_cleanupError = suppressWarnings(
-        test_cleanupError,
-        util.suppress(category=reporter.BrokenTestCaseWarning),
-        util.suppress(category=DeprecationWarning))
-
-
-    def test_upDownError(self):
-        """
-        Run upDownError and check that the output is correct and colored
-        correctly.
-        """
-        self.result.upDownError("method", None, None, False)
-        color, text = self.log[0]
-        self.assertEqual(color.strip(), self.result.ERROR)
-        self.assertEqual(text.strip(), 'method')
-    test_upDownError = suppressWarnings(
-        test_upDownError,
-        util.suppress(category=DeprecationWarning,
-                      message="upDownError is deprecated in Twisted 8.0."))
 
 
     def test_summaryColoredSuccess(self):
@@ -908,7 +895,7 @@ class TestTreeReporter(unittest.SynchronousTestCase):
 
 
 
-class TestReporterInterface(unittest.SynchronousTestCase):
+class ReporterInterfaceTests(unittest.SynchronousTestCase):
     """
     Tests for the bare interface of a trial reporter.
 
@@ -924,7 +911,7 @@ class TestReporterInterface(unittest.SynchronousTestCase):
 
     def setUp(self):
         self.test = sample.FooTest('test_foo')
-        self.stream = StringIO.StringIO()
+        self.stream = NativeStringIO()
         self.publisher = log.LogPublisher()
         self.result = self.resultFactory(self.stream, publisher=self.publisher)
 
@@ -983,13 +970,13 @@ class TestReporterInterface(unittest.SynchronousTestCase):
 
 
 
-class TestReporter(TestReporterInterface):
+class ReporterTests(ReporterInterfaceTests):
     """
     Tests for the base L{reporter.Reporter} class.
     """
 
     def setUp(self):
-        TestReporterInterface.setUp(self)
+        ReporterInterfaceTests.setUp(self)
         self._timer = 0
         self.result._getTime = self._getTime
 
@@ -1015,85 +1002,9 @@ class TestReporter(TestReporterInterface):
         result._writeln("Hello")
         self.assertEqual(self.stream.getvalue(), 'Hello\n')
         self.stream.truncate(0)
+        self.stream.seek(0)
         result._writeln("Hello %s!", 'World')
         self.assertEqual(self.stream.getvalue(), 'Hello World!\n')
-
-
-    def test_printErrorsDeprecated(self):
-        """
-        L{IReporter.printErrors} was deprecated in Twisted 8.0.
-        """
-        def f():
-            self.result.printErrors()
-        self.assertWarns(
-            DeprecationWarning, "printErrors is deprecated in Twisted 8.0.",
-            __file__, f)
-
-
-    def test_printSummaryDeprecated(self):
-        """
-        L{IReporter.printSummary} was deprecated in Twisted 8.0.
-        """
-        def f():
-            self.result.printSummary()
-        self.assertWarns(
-            DeprecationWarning, "printSummary is deprecated in Twisted 8.0.",
-            __file__, f)
-
-
-    def test_writeDeprecated(self):
-        """
-        L{IReporter.write} was deprecated in Twisted 8.0.
-        """
-        def f():
-            self.result.write("")
-        self.assertWarns(
-            DeprecationWarning, "write is deprecated in Twisted 8.0.",
-            __file__, f)
-
-
-    def test_writelnDeprecated(self):
-        """
-        L{IReporter.writeln} was deprecated in Twisted 8.0.
-        """
-        def f():
-            self.result.writeln("")
-        self.assertWarns(
-            DeprecationWarning, "writeln is deprecated in Twisted 8.0.",
-            __file__, f)
-
-
-    def test_separatorDeprecated(self):
-        """
-        L{IReporter.separator} was deprecated in Twisted 8.0.
-        """
-        def f():
-            return self.result.separator
-        self.assertWarns(
-            DeprecationWarning, "separator is deprecated in Twisted 8.0.",
-            __file__, f)
-
-
-    def test_streamDeprecated(self):
-        """
-        L{IReporter.stream} was deprecated in Twisted 8.0.
-        """
-        def f():
-            return self.result.stream
-        self.assertWarns(
-            DeprecationWarning, "stream is deprecated in Twisted 8.0.",
-            __file__, f)
-
-
-    def test_upDownErrorDeprecated(self):
-        """
-        L{IReporter.upDownError} was deprecated in Twisted 8.0.
-        """
-        def f():
-            self.result.upDownError(None, None, None, None)
-        self.assertWarns(
-            DeprecationWarning, "upDownError is deprecated in Twisted 8.0.",
-            __file__, f)
 
 
     def test_warning(self):
@@ -1175,13 +1086,13 @@ class TestReporter(TestReporterInterface):
 
 
 
-class TestSafeStream(unittest.SynchronousTestCase):
+class SafeStreamTests(unittest.SynchronousTestCase):
     def test_safe(self):
         """
         Test that L{reporter.SafeStream} successfully write to its original
         stream even if an interrupt happens during the write.
         """
-        stream = StringIO.StringIO()
+        stream = NativeStringIO()
         broken = BrokenStream(stream)
         safe = reporter.SafeStream(broken)
         safe.write("Hello")
@@ -1189,7 +1100,7 @@ class TestSafeStream(unittest.SynchronousTestCase):
 
 
 
-class TestSubunitReporter(TestReporterInterface):
+class SubunitReporterTests(ReporterInterfaceTests):
     """
     Tests for the subunit reporter.
 
@@ -1203,7 +1114,11 @@ class TestSubunitReporter(TestReporterInterface):
         if reporter.TestProtocolClient is None:
             raise SkipTest(
                 "Subunit not installed, cannot test SubunitReporter")
-        TestReporterInterface.setUp(self)
+
+        self.test = sample.FooTest('test_foo')
+        self.stream = BytesIO()
+        self.publisher = log.LogPublisher()
+        self.result = self.resultFactory(self.stream, publisher=self.publisher)
 
 
     def assertForwardsToSubunit(self, methodName, *args, **kwargs):
@@ -1218,7 +1133,8 @@ class TestSubunitReporter(TestReporterInterface):
         Assumes that the method on subunit has the same name as the method on
         L{SubunitReporter}.
         """
-        stream = StringIO.StringIO()
+        stream = BytesIO()
+
         subunitClient = reporter.TestProtocolClient(stream)
         subunitReturn = getattr(subunitClient, methodName)(*args, **kwargs)
         subunitOutput = stream.getvalue()
@@ -1265,6 +1181,7 @@ class TestSubunitReporter(TestReporterInterface):
             self.result.addExpectedFailure(self.test, sys.exc_info(), "todo")
         expectedFailureOutput = self.stream.getvalue()
         self.stream.truncate(0)
+        self.stream.seek(0)
         self.result.addSuccess(self.test)
         successOutput = self.stream.getvalue()
         self.assertEqual(successOutput, expectedFailureOutput)
@@ -1279,6 +1196,7 @@ class TestSubunitReporter(TestReporterInterface):
         self.result.addSkip(self.test, "reason")
         skipOutput = self.stream.getvalue()
         self.stream.truncate(0)
+        self.stream.seek(0)
         self.result.addSuccess(self.test)
         successOutput = self.stream.getvalue()
         self.assertEqual(successOutput, skipOutput)
@@ -1328,7 +1246,7 @@ class TestSubunitReporter(TestReporterInterface):
         of results is everything. Thus, done() does nothing.
         """
         self.result.done()
-        self.assertEqual('', self.stream.getvalue())
+        self.assertEqual(b'', self.stream.getvalue())
 
 
     def test_startTestSendsSubunitStartTest(self):
@@ -1379,7 +1297,7 @@ class TestSubunitReporter(TestReporterInterface):
         SubunitReporter.addFailure() sends the subunit 'addSuccess' message,
         since subunit doesn't model unexpected success.
         """
-        stream = StringIO.StringIO()
+        stream = BytesIO()
         subunitClient = reporter.TestProtocolClient(stream)
         subunitClient.addSuccess(self.test)
         subunitOutput = stream.getvalue()
@@ -1396,11 +1314,11 @@ class TestSubunitReporter(TestReporterInterface):
         output = self.stream.getvalue()
         # Just check that 'doesntexist' is in the output, rather than
         # assembling the expected stack trace.
-        self.assertIn('doesntexist', output)
+        self.assertIn(b'doesntexist', output)
 
 
 
-class TestSubunitReporterNotInstalled(unittest.SynchronousTestCase):
+class SubunitReporterNotInstalledTests(unittest.SynchronousTestCase):
     """
     Test behaviour when the subunit reporter is not installed.
     """
@@ -1410,14 +1328,14 @@ class TestSubunitReporterNotInstalled(unittest.SynchronousTestCase):
         If subunit is not installed, TestProtocolClient will be None, and
         SubunitReporter will raise an error when you try to construct it.
         """
-        stream = StringIO.StringIO()
+        stream = NativeStringIO()
         self.patch(reporter, 'TestProtocolClient', None)
         e = self.assertRaises(Exception, reporter.SubunitReporter, stream)
         self.assertEqual("Subunit not available", str(e))
 
 
 
-class TestTimingReporter(TestReporter):
+class TimingReporterTests(ReporterTests):
     resultFactory = reporter.TimingTextReporter
 
 
@@ -1454,7 +1372,7 @@ class LoggingReporter(reporter.Reporter):
 
 
 
-class TestAdaptedReporter(unittest.SynchronousTestCase):
+class AdaptedReporterTests(unittest.SynchronousTestCase):
     """
     L{reporter._AdaptedReporter} is a reporter wrapper that wraps all of the
     tests it receives before passing them on to the original reporter.

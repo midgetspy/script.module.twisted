@@ -5,9 +5,9 @@
 Tests for L{twisted.web.client.Agent} and related new client APIs.
 """
 
-import cookielib
 import zlib
-from StringIO import StringIO
+
+from io import BytesIO
 
 from zope.interface.verify import verifyObject
 
@@ -18,6 +18,7 @@ from twisted.web._newclient import ResponseNeverReceived, ResponseFailed
 from twisted.web._newclient import PotentialDataLoss
 from twisted.internet import defer, task
 from twisted.python.failure import Failure
+from twisted.python.compat import cookielib, intToBytes
 from twisted.python.components import proxyForInterface
 from twisted.test.proto_helpers import StringTransport, MemoryReactorClock
 from twisted.internet.task import Clock
@@ -26,18 +27,31 @@ from twisted.internet.error import ConnectionLost
 from twisted.internet.protocol import Protocol, Factory
 from twisted.internet.defer import Deferred, succeed, CancelledError
 from twisted.internet.endpoints import TCP4ClientEndpoint, SSL4ClientEndpoint
-from twisted.web.client import FileBodyProducer, Request, HTTPConnectionPool
-from twisted.web.client import _WebToNormalContextFactory, ResponseDone
-from twisted.web.client import WebClientContextFactory, _HTTP11ClientFactory
-from twisted.web.iweb import UNKNOWN_LENGTH, IAgent, IBodyProducer, IResponse
+
+from twisted.web.client import (FileBodyProducer, Request, HTTPConnectionPool,
+                                ResponseDone, _HTTP11ClientFactory, URI)
+
+from twisted.web.iweb import (
+    UNKNOWN_LENGTH, IAgent, IBodyProducer, IResponse, IAgentEndpointFactory,
+    )
 from twisted.web.http_headers import Headers
 from twisted.web._newclient import HTTP11ClientProtocol, Response
+
+from twisted.internet.interfaces import IOpenSSLClientConnectionCreator
+from zope.interface.declarations import implementer
+from twisted.web.iweb import IPolicyForHTTPS
+from twisted.python.deprecate import getDeprecationWarningString
+from twisted.python.versions import Version
+from twisted.web.client import BrowserLikePolicyForHTTPS
 from twisted.web.error import SchemeNotSupported
 
 try:
     from twisted.internet import ssl
-except:
+    from twisted.protocols.tls import TLSMemoryBIOFactory, TLSMemoryBIOProtocol
+except ImportError:
     ssl = None
+else:
+    from twisted.internet._sslverify import ClientTLSOptions, IOpenSSLTrustRoot
 
 
 
@@ -108,7 +122,7 @@ class FileBodyProducerTests(TestCase):
         L{FileBodyProducer} instances provide L{IBodyProducer}.
         """
         self.assertTrue(verifyObject(
-                IBodyProducer, FileBodyProducer(StringIO(""))))
+                IBodyProducer, FileBodyProducer(BytesIO(b""))))
 
 
     def test_unknownLength(self):
@@ -137,8 +151,8 @@ class FileBodyProducerTests(TestCase):
         both C{seek} and C{tell} methods, its C{length} attribute is set to the
         size of the file as determined by those methods.
         """
-        inputBytes = "here are some bytes"
-        inputFile = StringIO(inputBytes)
+        inputBytes = b"here are some bytes"
+        inputFile = BytesIO(inputBytes)
         inputFile.seek(5)
         producer = FileBodyProducer(inputFile)
         self.assertEqual(len(inputBytes) - 5, producer.length)
@@ -150,7 +164,7 @@ class FileBodyProducerTests(TestCase):
         If no L{Cooperator} instance is passed to L{FileBodyProducer}, the
         global cooperator is used.
         """
-        producer = FileBodyProducer(StringIO(""))
+        producer = FileBodyProducer(BytesIO(b""))
         self.assertEqual(task.cooperate, producer._cooperate)
 
 
@@ -160,12 +174,12 @@ class FileBodyProducerTests(TestCase):
         file to the given L{IConsumer} and returns a L{Deferred} which fires
         when they have all been written.
         """
-        expectedResult = "hello, world"
+        expectedResult = b"hello, world"
         readSize = 3
-        output = StringIO()
+        output = BytesIO()
         consumer = FileConsumer(output)
         producer = FileBodyProducer(
-            StringIO(expectedResult), self.cooperator, readSize)
+            BytesIO(expectedResult), self.cooperator, readSize)
         complete = producer.startProducing(consumer)
         for i in range(len(expectedResult) // readSize + 1):
             self._scheduled.pop(0)()
@@ -180,10 +194,10 @@ class FileBodyProducerTests(TestCase):
         it, the input file is closed.
         """
         readSize = 4
-        inputBytes = "some friendly bytes"
-        inputFile = StringIO(inputBytes)
+        inputBytes = b"some friendly bytes"
+        inputFile = BytesIO(inputBytes)
         producer = FileBodyProducer(inputFile, self.cooperator, readSize)
-        consumer = FileConsumer(StringIO())
+        consumer = FileConsumer(BytesIO())
         producer.startProducing(consumer)
         for i in range(len(inputBytes) // readSize + 2):
             self._scheduled.pop(0)()
@@ -201,7 +215,7 @@ class FileBodyProducerTests(TestCase):
             def read(self, count):
                 raise IOError("Simulated bad thing")
         producer = FileBodyProducer(BrokenFile(), self.cooperator)
-        complete = producer.startProducing(FileConsumer(StringIO()))
+        complete = producer.startProducing(FileConsumer(BytesIO()))
         self._scheduled.pop(0)()
         self.failureResultOf(complete).trap(IOError)
 
@@ -213,18 +227,18 @@ class FileBodyProducerTests(TestCase):
         closes the input file but does not cause the L{Deferred} returned by
         C{startProducing} to fire.
         """
-        expectedResult = "hello, world"
+        expectedResult = b"hello, world"
         readSize = 3
-        output = StringIO()
+        output = BytesIO()
         consumer = FileConsumer(output)
-        inputFile = StringIO(expectedResult)
+        inputFile = BytesIO(expectedResult)
         producer = FileBodyProducer(
             inputFile, self.cooperator, readSize)
         complete = producer.startProducing(consumer)
         producer.stopProducing()
         self.assertTrue(inputFile.closed)
         self._scheduled.pop(0)()
-        self.assertEqual("", output.getvalue())
+        self.assertEqual(b"", output.getvalue())
         self.assertNoResult(complete)
 
 
@@ -233,12 +247,12 @@ class FileBodyProducerTests(TestCase):
         L{FileBodyProducer.pauseProducing} temporarily suspends writing bytes
         from the input file to the given L{IConsumer}.
         """
-        expectedResult = "hello, world"
+        expectedResult = b"hello, world"
         readSize = 5
-        output = StringIO()
+        output = BytesIO()
         consumer = FileConsumer(output)
         producer = FileBodyProducer(
-            StringIO(expectedResult), self.cooperator, readSize)
+            BytesIO(expectedResult), self.cooperator, readSize)
         complete = producer.startProducing(consumer)
         self._scheduled.pop(0)()
         self.assertEqual(output.getvalue(), expectedResult[:5])
@@ -262,12 +276,12 @@ class FileBodyProducerTests(TestCase):
         input file to the given L{IConsumer} after it was previously paused
         with L{FileBodyProducer.pauseProducing}.
         """
-        expectedResult = "hello, world"
+        expectedResult = b"hello, world"
         readSize = 5
-        output = StringIO()
+        output = BytesIO()
         consumer = FileConsumer(output)
         producer = FileBodyProducer(
-            StringIO(expectedResult), self.cooperator, readSize)
+            BytesIO(expectedResult), self.cooperator, readSize)
         producer.startProducing(consumer)
         self._scheduled.pop(0)()
         self.assertEqual(expectedResult[:readSize], output.getvalue())
@@ -284,6 +298,21 @@ class FakeReactorAndConnectMixin:
     method which allows instances to pretend to be endpoints.
     """
     Reactor = MemoryReactorClock
+
+    @implementer(IPolicyForHTTPS)
+    class StubPolicy(object):
+        """
+        A stub policy for HTTPS URIs which allows HTTPS tests to run even if
+        pyOpenSSL isn't installed.
+        """
+        def creatorForNetloc(self, hostname, port):
+            """
+            Don't actually do anything.
+
+            @param hostname: ignored
+
+            @param port: ignored
+            """
 
     class StubEndpoint(object):
         """
@@ -309,7 +338,7 @@ class FakeReactorAndConnectMixin:
         Return an Agent suitable for use in tests that wrap the Agent and want
         both a fake reactor and StubHTTPProtocol.
         """
-        agent = client.Agent(reactor)
+        agent = client.Agent(reactor, self.StubPolicy())
         _oldGetEndpoint = agent._getEndpoint
         agent._getEndpoint = lambda *args: (
             self.StubEndpoint(_oldGetEndpoint(*args), self))
@@ -400,25 +429,25 @@ class HTTPConnectionPoolTests(TestCase, FakeReactorAndConnectMixin):
         # We start out with one cached connection:
         protocol = StubHTTPProtocol()
         protocol.makeConnection(StringTransport())
-        self.pool._putConnection(("http", "example.com", 80), protocol)
+        self.pool._putConnection(("http", b"example.com", 80), protocol)
 
         # Connection is in pool, still not closed:
         self.assertEqual(protocol.transport.disconnecting, False)
         self.assertIn(protocol,
-                      self.pool._connections[("http", "example.com", 80)])
+                      self.pool._connections[("http", b"example.com", 80)])
 
         # Advance 239 seconds, still not closed:
         self.fakeReactor.advance(239)
         self.assertEqual(protocol.transport.disconnecting, False)
         self.assertIn(protocol,
-                      self.pool._connections[("http", "example.com", 80)])
+                      self.pool._connections[("http", b"example.com", 80)])
         self.assertIn(protocol, self.pool._timeouts)
 
         # Advance past 240 seconds, connection will be closed:
         self.fakeReactor.advance(1.1)
         self.assertEqual(protocol.transport.disconnecting, True)
         self.assertNotIn(protocol,
-                         self.pool._connections[("http", "example.com", 80)])
+                         self.pool._connections[("http", b"example.com", 80)])
         self.assertNotIn(protocol, self.pool._timeouts)
 
 
@@ -434,18 +463,18 @@ class HTTPConnectionPoolTests(TestCase, FakeReactorAndConnectMixin):
         origCached = [StubHTTPProtocol(), StubHTTPProtocol()]
         for p in origCached:
             p.makeConnection(StringTransport())
-            pool._putConnection(("http", "example.com", 80), p)
-        self.assertEqual(pool._connections[("http", "example.com", 80)],
+            pool._putConnection(("http", b"example.com", 80), p)
+        self.assertEqual(pool._connections[("http", b"example.com", 80)],
                          origCached)
         timeouts = pool._timeouts.copy()
 
         # Now we add another one:
         newProtocol = StubHTTPProtocol()
         newProtocol.makeConnection(StringTransport())
-        pool._putConnection(("http", "example.com", 80), newProtocol)
+        pool._putConnection(("http", b"example.com", 80), newProtocol)
 
         # The oldest cached connections will be removed and disconnected:
-        newCached = pool._connections[("http", "example.com", 80)]
+        newCached = pool._connections[("http", b"example.com", 80)]
         self.assertEqual(len(newCached), 2)
         self.assertEqual(newCached, [origCached[1], newProtocol])
         self.assertEqual([p.transport.disconnecting for p in newCached],
@@ -466,17 +495,17 @@ class HTTPConnectionPoolTests(TestCase, FakeReactorAndConnectMixin):
             self.pool._putConnection((scheme, host, port), p)
             return p
         persistent = []
-        persistent.append(addProtocol("http", "example.com", 80))
-        persistent.append(addProtocol("http", "example.com", 80))
-        addProtocol("https", "example.com", 443)
-        addProtocol("http", "www2.example.com", 80)
+        persistent.append(addProtocol("http", b"example.com", 80))
+        persistent.append(addProtocol("http", b"example.com", 80))
+        addProtocol("https", b"example.com", 443)
+        addProtocol("http", b"www2.example.com", 80)
 
         self.assertEqual(
-            self.pool._connections[("http", "example.com", 80)], persistent)
+            self.pool._connections[("http", b"example.com", 80)], persistent)
         self.assertEqual(
-            len(self.pool._connections[("https", "example.com", 443)]), 1)
+            len(self.pool._connections[("https", b"example.com", 443)]), 1)
         self.assertEqual(
-            len(self.pool._connections[("http", "www2.example.com", 80)]), 1)
+            len(self.pool._connections[("http", b"www2.example.com", 80)]), 1)
 
 
     def test_getCachedConnection(self):
@@ -487,19 +516,19 @@ class HTTPConnectionPoolTests(TestCase, FakeReactorAndConnectMixin):
         # We start out with one cached connection:
         protocol = StubHTTPProtocol()
         protocol.makeConnection(StringTransport())
-        self.pool._putConnection(("http", "example.com", 80), protocol)
+        self.pool._putConnection(("http", b"example.com", 80), protocol)
 
         def gotConnection(conn):
             # We got the cached connection:
             self.assertIdentical(protocol, conn)
             self.assertNotIn(
-                conn, self.pool._connections[("http", "example.com", 80)])
+                conn, self.pool._connections[("http", b"example.com", 80)])
             # And the timeout was cancelled:
             self.fakeReactor.advance(241)
             self.assertEqual(conn.transport.disconnecting, False)
             self.assertNotIn(conn, self.pool._timeouts)
 
-        return self.pool.getConnection(("http", "example.com", 80),
+        return self.pool.getConnection(("http", b"example.com", 80),
                                        BadEndpoint(),
                                        ).addCallback(gotConnection)
 
@@ -532,7 +561,7 @@ class HTTPConnectionPoolTests(TestCase, FakeReactorAndConnectMixin):
         are removed and not returned.
         """
         pool = self.pool
-        key = ("http", "example.com", 80)
+        key = ("http", b"example.com", 80)
 
         # We start out with two cached connection, the max:
         origCached = [StubHTTPProtocol(), StubHTTPProtocol()]
@@ -566,13 +595,13 @@ class HTTPConnectionPoolTests(TestCase, FakeReactorAndConnectMixin):
         self.assertEqual(protocol.state, "QUIESCENT")
 
         protocol.state = "NOTQUIESCENT"
-        self.pool._putConnection(("http", "example.com", 80), protocol)
+        self.pool._putConnection(("http", b"example.com", 80), protocol)
         exc, = self.flushLoggedErrors(RuntimeError)
         self.assertEqual(
             exc.value.args[0],
             "BUG: Non-quiescent protocol added to connection pool.")
         self.assertIdentical(None, self.pool._connections.get(
-                ("http", "example.com", 80)))
+                ("http", b"example.com", 80)))
 
 
     def test_getUsesQuiescentCallback(self):
@@ -626,8 +655,8 @@ class HTTPConnectionPoolTests(TestCase, FakeReactorAndConnectMixin):
             p.makeConnection(StringTransport())
             self.pool._putConnection((scheme, host, port), p)
             persistent.append(p)
-        addProtocol("http", "example.com", 80)
-        addProtocol("http", "www2.example.com", 80)
+        addProtocol("http", b"example.com", 80)
+        addProtocol("http", b"www2.example.com", 80)
         doneDeferred = self.pool.closeCachedConnections()
 
         # Connections have begun disconnecting:
@@ -681,6 +710,25 @@ class AgentTestsMixin(object):
 
 
 
+@implementer(IAgentEndpointFactory)
+class StubEndpointFactory(object):
+    """
+    A stub L{IAgentEndpointFactory} for use in testing.
+    """
+    def endpointForURI(self, uri):
+        """
+        Testing implementation.
+
+        @param uri: A L{URI}.
+
+        @return: C{(scheme, host, port)} of passed in URI; violation of
+            interface but useful for testing.
+        @rtype: L{tuple}
+        """
+        return (uri.scheme, uri.host, uri.port)
+
+
+
 class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
     """
     Tests for the new HTTP client API provided by L{Agent}.
@@ -719,7 +767,7 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         pool = HTTPConnectionPool(self.reactor)
         agent = client.Agent(self.reactor, pool=pool)
         agent._getEndpoint = lambda *args: self
-        agent.request("GET", "http://127.0.0.1")
+        agent.request(b"GET", b"http://127.0.0.1")
         self.assertEqual(self.protocol.requests[0][0].persistent, True)
 
 
@@ -737,7 +785,7 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         pool = HTTPConnectionPool(self.reactor, persistent=False)
         agent = client.Agent(self.reactor, pool=pool)
         agent._getEndpoint = lambda *args: self
-        agent.request("GET", "http://127.0.0.1")
+        agent.request(b"GET", b"http://127.0.0.1")
         self.assertEqual(self.protocol.requests[0][0].persistent, False)
 
 
@@ -749,9 +797,9 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         """
         endpoint = DummyEndpoint()
         class MyAgent(client.Agent):
-            def _getEndpoint(this, scheme, host, port):
-                self.assertEqual((scheme, host, port),
-                                 ("http", "foo", 80))
+            def _getEndpoint(this, uri):
+                self.assertEqual((uri.scheme, uri.host, uri.port),
+                                 (b"http", b"foo", 80))
                 return endpoint
 
         class DummyPool(object):
@@ -762,7 +810,7 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
                 self.assertEqual(ep, endpoint)
                 # This is the key the default Agent uses, others will have
                 # different keys:
-                self.assertEqual(key, ("http", "foo", 80))
+                self.assertEqual(key, (b"http", b"foo", 80))
                 return defer.succeed(StubHTTPProtocol())
 
         pool = DummyPool()
@@ -770,9 +818,9 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         self.assertIdentical(pool, agent._pool)
 
         headers = http_headers.Headers()
-        headers.addRawHeader("host", "foo")
+        headers.addRawHeader(b"host", b"foo")
         bodyProducer = object()
-        agent.request('GET', 'http://foo/',
+        agent.request(b'GET', b'http://foo/',
                       bodyProducer=bodyProducer, headers=headers)
         self.assertEqual(agent._pool.connected, True)
 
@@ -784,7 +832,7 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         C{'http'}.
         """
         return self.assertFailure(
-            self.agent.request('GET', 'mailto:alice@example.com'),
+            self.agent.request(b'GET', b'mailto:alice@example.com'),
             SchemeNotSupported)
 
 
@@ -793,7 +841,7 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         The L{Deferred} returned by L{Agent.request} fires with a L{Failure} if
         the TCP connection attempt fails.
         """
-        result = self.agent.request('GET', 'http://foo/')
+        result = self.agent.request(b'GET', b'http://foo/')
         # Cause the connection to be refused
         host, port, factory = self.reactor.tcpClients.pop()[:3]
         factory.clientConnectionFailed(None, Failure(ConnectionRefusedError()))
@@ -805,32 +853,30 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         L{Agent._getEndpoint} return a C{TCP4ClientEndpoint} when passed a
         scheme of C{'http'}.
         """
-        expectedHost = 'example.com'
+        expectedHost = b'example.com'
         expectedPort = 1234
-        endpoint = self.agent._getEndpoint('http', expectedHost, expectedPort)
-        self.assertEqual(endpoint._host, expectedHost)
+        endpoint = self.agent._getEndpoint(URI.fromBytes(
+            b'http://' + expectedHost + b":" + intToBytes(expectedPort)))
+        self.assertEqual(endpoint._host, "example.com")
         self.assertEqual(endpoint._port, expectedPort)
         self.assertIsInstance(endpoint, TCP4ClientEndpoint)
 
 
-    def test_connectHTTPS(self):
+    def test_nonDecodableURI(self):
         """
-        L{Agent._getEndpoint} return a C{SSL4ClientEndpoint} when passed a
-        scheme of C{'https'}.
+        L{Agent._getEndpoint} when given a non-ASCII decodable URI will raise a
+        L{ValueError} saying such.
         """
-        expectedHost = 'example.com'
-        expectedPort = 4321
-        endpoint = self.agent._getEndpoint('https', expectedHost, expectedPort)
-        self.assertIsInstance(endpoint, SSL4ClientEndpoint)
-        self.assertEqual(endpoint._host, expectedHost)
-        self.assertEqual(endpoint._port, expectedPort)
-        self.assertIsInstance(endpoint._sslContextFactory,
-                              _WebToNormalContextFactory)
-        # Default context factory was used:
-        self.assertIsInstance(endpoint._sslContextFactory._webContext,
-                              WebClientContextFactory)
-    if ssl is None:
-        test_connectHTTPS.skip = "OpenSSL not present"
+        uri = URI.fromBytes(b"http://example.com:80")
+        uri.host = u'\u2603.com'.encode('utf8')
+
+        with self.assertRaises(ValueError) as e:
+            self.agent._getEndpoint(uri)
+
+        self.assertEqual(e.exception.args[0],
+                         ("The host of the provided URI ({reprout}) contains "
+                          "non-ASCII octets, it should be ASCII "
+                          "decodable.").format(reprout=repr(uri.host)))
 
 
     def test_connectHTTPSCustomContextFactory(self):
@@ -841,7 +887,7 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         to the context factory's C{getContext} method.  The resulting context
         object will be used to establish the SSL connection.
         """
-        expectedHost = 'example.org'
+        expectedHost = b'example.org'
         expectedPort = 20443
         expectedContext = object()
 
@@ -852,7 +898,8 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
                 return expectedContext
 
         agent = client.Agent(self.reactor, StubWebContextFactory())
-        endpoint = agent._getEndpoint('https', expectedHost, expectedPort)
+        endpoint = agent._getEndpoint(URI.fromBytes(
+            b'https://' + expectedHost + b":" + intToBytes(expectedPort)))
         contextFactory = endpoint._sslContextFactory
         context = contextFactory.getContext()
         self.assertEqual(context, expectedContext)
@@ -867,10 +914,10 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         """
         self.agent._getEndpoint = lambda *args: self
         self.agent.request(
-            'GET', 'http://example.com/foo?bar')
+            b'GET', b'http://example.com/foo?bar')
 
         req, res = self.protocol.requests.pop()
-        self.assertEqual(req.headers.getRawHeaders('host'), ['example.com'])
+        self.assertEqual(req.headers.getRawHeaders(b'host'), [b'example.com'])
 
 
     def test_hostOverride(self):
@@ -879,13 +926,13 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         I{Host} header, that value takes precedence over the one which would
         otherwise be automatically provided.
         """
-        headers = http_headers.Headers({'foo': ['bar'], 'host': ['quux']})
+        headers = http_headers.Headers({b'foo': [b'bar'], b'host': [b'quux']})
         self.agent._getEndpoint = lambda *args: self
         self.agent.request(
-            'GET', 'http://example.com/foo?bar', headers)
+            b'GET', b'http://example.com/foo?bar', headers)
 
         req, res = self.protocol.requests.pop()
-        self.assertEqual(req.headers.getRawHeaders('host'), ['quux'])
+        self.assertEqual(req.headers.getRawHeaders(b'host'), [b'quux'])
 
 
     def test_headersUnmodified(self):
@@ -896,7 +943,7 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         headers = http_headers.Headers()
         self.agent._getEndpoint = lambda *args: self
         self.agent.request(
-            'GET', 'http://example.com/foo', headers)
+            b'GET', b'http://example.com/foo', headers)
 
         protocol = self.protocol
 
@@ -913,8 +960,8 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         the host name passed to it.
         """
         self.assertEqual(
-            self.agent._computeHostValue('http', 'example.com', 80),
-            'example.com')
+            self.agent._computeHostValue(b'http', b'example.com', 80),
+            b'example.com')
 
 
     def test_hostValueNonStandardHTTP(self):
@@ -924,8 +971,8 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         host passed to it joined together with the port number by C{":"}.
         """
         self.assertEqual(
-            self.agent._computeHostValue('http', 'example.com', 54321),
-            'example.com:54321')
+            self.agent._computeHostValue(b'http', b'example.com', 54321),
+            b'example.com:54321')
 
 
     def test_hostValueStandardHTTPS(self):
@@ -935,8 +982,8 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         the host name passed to it.
         """
         self.assertEqual(
-            self.agent._computeHostValue('https', 'example.com', 443),
-            'example.com')
+            self.agent._computeHostValue(b'https', b'example.com', 443),
+            b'example.com')
 
 
     def test_hostValueNonStandardHTTPS(self):
@@ -946,8 +993,8 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         host passed to it joined together with the port number by C{":"}.
         """
         self.assertEqual(
-            self.agent._computeHostValue('https', 'example.com', 54321),
-            'example.com:54321')
+            self.agent._computeHostValue(b'https', b'example.com', 54321),
+            b'example.com:54321')
 
 
     def test_request(self):
@@ -960,12 +1007,12 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         """
         self.agent._getEndpoint = lambda *args: self
 
-        headers = http_headers.Headers({'foo': ['bar']})
+        headers = http_headers.Headers({b'foo': [b'bar']})
         # Just going to check the body for identity, so it doesn't need to be
         # real.
         body = object()
         self.agent.request(
-            'GET', 'http://example.com:1234/foo?bar', headers, body)
+            b'GET', b'http://example.com:1234/foo?bar', headers, body)
 
         protocol = self.protocol
 
@@ -973,12 +1020,12 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         self.assertEqual(len(protocol.requests), 1)
         req, res = protocol.requests.pop()
         self.assertIsInstance(req, Request)
-        self.assertEqual(req.method, 'GET')
-        self.assertEqual(req.uri, '/foo?bar')
+        self.assertEqual(req.method, b'GET')
+        self.assertEqual(req.uri, b'/foo?bar')
         self.assertEqual(
             req.headers,
-            http_headers.Headers({'foo': ['bar'],
-                                  'host': ['example.com:1234']}))
+            http_headers.Headers({b'foo': [b'bar'],
+                                  b'host': [b'example.com:1234']}))
         self.assertIdentical(req.bodyProducer, body)
 
 
@@ -988,7 +1035,7 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         following C{connectTCP} agent.
         """
         agent = client.Agent(self.reactor, connectTimeout=5)
-        agent.request('GET', 'http://foo/')
+        agent.request(b'GET', b'http://foo/')
         timeout = self.reactor.tcpClients.pop()[3]
         self.assertEqual(5, timeout)
 
@@ -998,8 +1045,8 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         L{Agent} takes a C{connectTimeout} argument which is forwarded to the
         following C{connectSSL} call.
         """
-        agent = client.Agent(self.reactor, connectTimeout=5)
-        agent.request('GET', 'https://foo/')
+        agent = client.Agent(self.reactor, self.StubPolicy(), connectTimeout=5)
+        agent.request(b'GET', b'https://foo/')
         timeout = self.reactor.sslClients.pop()[4]
         self.assertEqual(5, timeout)
 
@@ -1010,7 +1057,7 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         following C{connectTCP} call.
         """
         agent = client.Agent(self.reactor, bindAddress='192.168.0.1')
-        agent.request('GET', 'http://foo/')
+        agent.request(b'GET', b'http://foo/')
         address = self.reactor.tcpClients.pop()[4]
         self.assertEqual('192.168.0.1', address)
 
@@ -1020,8 +1067,9 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         L{Agent} takes a C{bindAddress} argument which is forwarded to the
         following C{connectSSL} call.
         """
-        agent = client.Agent(self.reactor, bindAddress='192.168.0.1')
-        agent.request('GET', 'https://foo/')
+        agent = client.Agent(self.reactor, self.StubPolicy(),
+                             bindAddress='192.168.0.1')
+        agent.request(b'GET', b'https://foo/')
         address = self.reactor.sslClients.pop()[5]
         self.assertEqual('192.168.0.1', address)
 
@@ -1033,7 +1081,7 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         """
         uri = b'http://example.com/'
         agent = self.buildAgentForWrapperTest(self.reactor)
-        d = agent.request('GET', uri)
+        d = agent.request(b'GET', uri)
 
         # The request should be issued.
         self.assertEqual(len(self.protocol.requests), 1)
@@ -1041,9 +1089,9 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         self.assertIsInstance(req, Request)
 
         resp = client.Response._construct(
-            ('HTTP', 1, 1),
+            (b'HTTP', 1, 1),
             200,
-            'OK',
+            b'OK',
             client.Headers({}),
             None,
             req)
@@ -1079,6 +1127,307 @@ class AgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         self.assertIdentical(request.absoluteURI, None)
 
 
+    def test_endpointFactory(self):
+        """
+        L{Agent.usingEndpointFactory} creates an L{Agent} that uses the given
+        factory to create endpoints.
+        """
+        factory = StubEndpointFactory()
+        agent = client.Agent.usingEndpointFactory(
+            None, endpointFactory=factory)
+        uri = URI.fromBytes(b'http://example.com/')
+        returnedEndpoint = agent._getEndpoint(uri)
+        self.assertEqual(returnedEndpoint, (b"http", b"example.com", 80))
+
+
+    def test_endpointFactoryDefaultPool(self):
+        """
+        If no pool is passed in to L{Agent.usingEndpointFactory}, a default
+        pool is constructed with no persistent connections.
+        """
+        agent = client.Agent.usingEndpointFactory(
+            self.reactor, StubEndpointFactory())
+        pool = agent._pool
+        self.assertEqual((pool.__class__, pool.persistent, pool._reactor),
+                          (HTTPConnectionPool, False, agent._reactor))
+
+
+    def test_endpointFactoryPool(self):
+        """
+        If a pool is passed in to L{Agent.usingEndpointFactory} it is used as
+        the L{Agent} pool.
+        """
+        pool = object()
+        agent = client.Agent.usingEndpointFactory(
+            self.reactor, StubEndpointFactory(), pool)
+        self.assertIs(pool, agent._pool)
+
+
+
+class AgentHTTPSTests(TestCase, FakeReactorAndConnectMixin):
+    """
+    Tests for the new HTTP client API that depends on SSL.
+    """
+    if ssl is None:
+        skip = "SSL not present, cannot run SSL tests"
+
+
+    def makeEndpoint(self, host=b'example.com', port=443):
+        """
+        Create an L{Agent} with an https scheme and return its endpoint
+        created according to the arguments.
+
+        @param host: The host for the endpoint.
+        @type host: L{bytes}
+
+        @param port: The port for the endpoint.
+        @type port: L{int}
+
+        @return: An endpoint of an L{Agent} constructed according to args.
+        @rtype: L{SSL4ClientEndpoint}
+        """
+        return client.Agent(self.Reactor())._getEndpoint(
+            URI.fromBytes(b'https://' + host + b":" + intToBytes(port) + b"/"))
+
+
+    def test_endpointType(self):
+        """
+        L{Agent._getEndpoint} return a L{SSL4ClientEndpoint} when passed a
+        scheme of C{'https'}.
+        """
+        self.assertIsInstance(self.makeEndpoint(), SSL4ClientEndpoint)
+
+
+    def test_hostArgumentIsRespected(self):
+        """
+        If a host is passed, the endpoint respects it.
+        """
+        endpoint = self.makeEndpoint(host=b"example.com")
+        self.assertEqual(endpoint._host, "example.com")
+
+
+    def test_portArgumentIsRespected(self):
+        """
+        If a port is passed, the endpoint respects it.
+        """
+        expectedPort = 4321
+        endpoint = self.makeEndpoint(port=expectedPort)
+        self.assertEqual(endpoint._port, expectedPort)
+
+
+    def test_contextFactoryType(self):
+        """
+        L{Agent} wraps its connection creator creator and uses modern TLS APIs.
+        """
+        endpoint = self.makeEndpoint()
+        contextFactory = endpoint._sslContextFactory
+        self.assertIsInstance(contextFactory, ClientTLSOptions)
+        self.assertEqual(contextFactory._hostname, u"example.com")
+
+
+    def test_connectHTTPSCustomConnectionCreator(self):
+        """
+        If a custom L{WebClientConnectionCreator}-like object is passed to
+        L{Agent.__init__} it will be used to determine the SSL parameters for
+        HTTPS requests.  When an HTTPS request is made, the hostname and port
+        number of the request URL will be passed to the connection creator's
+        C{creatorForNetloc} method.  The resulting context object will be used
+        to establish the SSL connection.
+        """
+        expectedHost = b'example.org'
+        expectedPort = 20443
+        class JustEnoughConnection(object):
+            handshakeStarted = False
+            connectState = False
+            def do_handshake(self):
+                """
+                The handshake started.  Record that fact.
+                """
+                self.handshakeStarted = True
+            def set_connect_state(self):
+                """
+                The connection started.  Record that fact.
+                """
+                self.connectState = True
+
+        contextArgs = []
+
+        @implementer(IOpenSSLClientConnectionCreator)
+        class JustEnoughCreator(object):
+            def __init__(self, hostname, port):
+                self.hostname = hostname
+                self.port = port
+
+            def clientConnectionForTLS(self, tlsProtocol):
+                """
+                Implement L{IOpenSSLClientConnectionCreator}.
+
+                @param tlsProtocol: The TLS protocol.
+                @type tlsProtocol: L{TLSMemoryBIOProtocol}
+
+                @return: C{expectedConnection}
+                """
+                contextArgs.append((tlsProtocol, self.hostname, self.port))
+                return expectedConnection
+
+        expectedConnection = JustEnoughConnection()
+        @implementer(IPolicyForHTTPS)
+        class StubBrowserLikePolicyForHTTPS(object):
+            def creatorForNetloc(self, hostname, port):
+                """
+                Emulate L{BrowserLikePolicyForHTTPS}.
+
+                @param hostname: The hostname to verify.
+                @type hostname: L{bytes}
+
+                @param port: The port number.
+                @type port: L{int}
+
+                @return: a stub L{IOpenSSLClientConnectionCreator}
+                @rtype: L{JustEnoughCreator}
+                """
+                return JustEnoughCreator(hostname, port)
+
+        expectedCreatorCreator = StubBrowserLikePolicyForHTTPS()
+        reactor = self.Reactor()
+        agent = client.Agent(reactor, expectedCreatorCreator)
+        endpoint = agent._getEndpoint(URI.fromBytes(
+            b'https://' + expectedHost + b":" + intToBytes(expectedPort)))
+        endpoint.connect(Factory.forProtocol(Protocol))
+        passedFactory = reactor.sslClients[-1][2]
+        passedContextFactory = reactor.sslClients[-1][3]
+        tlsFactory = TLSMemoryBIOFactory(
+            passedContextFactory, True, passedFactory
+        )
+        tlsProtocol = tlsFactory.buildProtocol(None)
+        tlsProtocol.makeConnection(StringTransport())
+        tls = contextArgs[0][0]
+        self.assertIsInstance(tls, TLSMemoryBIOProtocol)
+        self.assertEqual(contextArgs[0][1:], (expectedHost, expectedPort))
+        self.assertTrue(expectedConnection.handshakeStarted)
+        self.assertTrue(expectedConnection.connectState)
+
+
+    def test_deprecatedDuckPolicy(self):
+        """
+        Passing something that duck-types I{like} a L{web client context
+        factory <twisted.web.client.WebClientContextFactory>} - something that
+        does not provide L{IPolicyForHTTPS} - to L{Agent} emits a
+        L{DeprecationWarning} even if you don't actually C{import
+        WebClientContextFactory} to do it.
+        """
+        def warnMe():
+            client.Agent(MemoryReactorClock(),
+                         "does-not-provide-IPolicyForHTTPS")
+        warnMe()
+        warnings = self.flushWarnings([warnMe])
+        self.assertEqual(len(warnings), 1)
+        [warning] = warnings
+        self.assertEqual(warning['category'], DeprecationWarning)
+        self.assertEqual(
+            warning['message'],
+            "'does-not-provide-IPolicyForHTTPS' was passed as the HTTPS "
+            "policy for an Agent, but it does not provide IPolicyForHTTPS.  "
+            "Since Twisted 14.0, you must pass a provider of IPolicyForHTTPS."
+        )
+
+
+    def test_alternateTrustRoot(self):
+        """
+        L{BrowserLikePolicyForHTTPS.creatorForNetloc} returns an
+        L{IOpenSSLClientConnectionCreator} provider which will add certificates
+        from the given trust root.
+        """
+        @implementer(IOpenSSLTrustRoot)
+        class CustomOpenSSLTrustRoot(object):
+            called = False
+            context = None
+            def _addCACertsToContext(self, context):
+                self.called = True
+                self.context = context
+        trustRoot = CustomOpenSSLTrustRoot()
+        policy = BrowserLikePolicyForHTTPS(trustRoot=trustRoot)
+        creator = policy.creatorForNetloc(b"thingy", 4321)
+        self.assertTrue(trustRoot.called)
+        connection = creator.clientConnectionForTLS(None)
+        self.assertIs(trustRoot.context, connection.get_context())
+
+
+
+class WebClientContextFactoryTests(TestCase):
+    """
+    Tests for the context factory wrapper for web clients
+    L{twisted.web.client.WebClientContextFactory}.
+    """
+
+    def setUp(self):
+        """
+        Get WebClientContextFactory while quashing its deprecation warning.
+        """
+        from twisted.web.client import WebClientContextFactory
+        self.warned = self.flushWarnings([WebClientContextFactoryTests.setUp])
+        self.webClientContextFactory = WebClientContextFactory
+
+
+    def test_deprecated(self):
+        """
+        L{twisted.web.client.WebClientContextFactory} is deprecated.  Importing
+        it displays a warning.
+        """
+        self.assertEqual(len(self.warned), 1)
+        [warning] = self.warned
+        self.assertEqual(warning['category'], DeprecationWarning)
+        self.assertEqual(
+            warning['message'],
+            getDeprecationWarningString(
+                self.webClientContextFactory, Version("Twisted", 14, 0, 0),
+                replacement=BrowserLikePolicyForHTTPS,
+            )
+
+            # See https://twistedmatrix.com/trac/ticket/7242
+            .replace(";", ":")
+        )
+
+
+    def test_missingSSL(self):
+        """
+        If C{getContext} is called and SSL is not available, raise
+        L{NotImplementedError}.
+        """
+        self.assertRaises(
+            NotImplementedError,
+            self.webClientContextFactory().getContext,
+            b'example.com', 443,
+        )
+
+
+    def test_returnsContext(self):
+        """
+        If SSL is present, C{getContext} returns a L{SSL.Context}.
+        """
+        ctx = self.webClientContextFactory().getContext('example.com', 443)
+        self.assertIsInstance(ctx, ssl.SSL.Context)
+
+
+    def test_setsTrustRootOnContextToDefaultTrustRoot(self):
+        """
+        The L{CertificateOptions} has C{trustRoot} set to the default trust
+        roots.
+        """
+        ctx = self.webClientContextFactory()
+        certificateOptions = ctx._getCertificateOptions('example.com', 443)
+        self.assertIsInstance(
+            certificateOptions.trustRoot, ssl.OpenSSLDefaultPaths)
+
+
+    if ssl is None:
+        test_returnsContext.skip = "SSL not present, cannot run SSL tests."
+        test_setsTrustRootOnContextToDefaultTrustRoot.skip = (
+            "SSL not present, cannot run SSL tests.")
+    else:
+        test_missingSSL.skip = "SSL present."
+
+
 
 class HTTPConnectionPoolRetryTests(TestCase, FakeReactorAndConnectMixin):
     """
@@ -1093,18 +1442,20 @@ class HTTPConnectionPoolRetryTests(TestCase, FakeReactorAndConnectMixin):
         """
         pool = client.HTTPConnectionPool(None)
         connection = client._RetryingHTTP11ClientProtocol(None, pool)
-        self.assertTrue(connection._shouldRetry("GET", RequestNotSent(), None))
-        self.assertTrue(connection._shouldRetry("HEAD", RequestNotSent(), None))
         self.assertTrue(connection._shouldRetry(
-                "OPTIONS", RequestNotSent(), None))
+            b"GET", RequestNotSent(), None))
         self.assertTrue(connection._shouldRetry(
-                "TRACE", RequestNotSent(), None))
+            b"HEAD", RequestNotSent(), None))
         self.assertTrue(connection._shouldRetry(
-                "DELETE", RequestNotSent(), None))
+            b"OPTIONS", RequestNotSent(), None))
+        self.assertTrue(connection._shouldRetry(
+            b"TRACE", RequestNotSent(), None))
+        self.assertTrue(connection._shouldRetry(
+            b"DELETE", RequestNotSent(), None))
         self.assertFalse(connection._shouldRetry(
-                "POST", RequestNotSent(), None))
+            b"POST", RequestNotSent(), None))
         self.assertFalse(connection._shouldRetry(
-                "MYMETHOD", RequestNotSent(), None))
+            b"MYMETHOD", RequestNotSent(), None))
         # This will be covered by a different ticket, since we need support
         #for resettable body producers:
         # self.assertTrue(connection._doRetry("PUT", RequestNotSent(), None))
@@ -1117,15 +1468,16 @@ class HTTPConnectionPoolRetryTests(TestCase, FakeReactorAndConnectMixin):
         """
         pool = client.HTTPConnectionPool(None)
         connection = client._RetryingHTTP11ClientProtocol(None, pool)
-        self.assertTrue(connection._shouldRetry("GET", RequestNotSent(), None))
         self.assertTrue(connection._shouldRetry(
-                "GET", RequestTransmissionFailed([]), None))
+            b"GET", RequestNotSent(), None))
         self.assertTrue(connection._shouldRetry(
-                "GET", ResponseNeverReceived([]),None))
+            b"GET", RequestTransmissionFailed([]), None))
+        self.assertTrue(connection._shouldRetry(
+            b"GET", ResponseNeverReceived([]),None))
         self.assertFalse(connection._shouldRetry(
-                "GET", ResponseFailed([]), None))
+            b"GET", ResponseFailed([]), None))
         self.assertFalse(connection._shouldRetry(
-                "GET", ConnectionRefusedError(), None))
+            b"GET", ConnectionRefusedError(), None))
 
 
     def test_dontRetryIfFailedDueToCancel(self):
@@ -1137,8 +1489,7 @@ class HTTPConnectionPoolRetryTests(TestCase, FakeReactorAndConnectMixin):
         pool = client.HTTPConnectionPool(None)
         connection = client._RetryingHTTP11ClientProtocol(None, pool)
         exception = ResponseNeverReceived([Failure(defer.CancelledError())])
-        self.assertFalse(connection._shouldRetry(
-                "GET", exception, None))
+        self.assertFalse(connection._shouldRetry(b"GET", exception, None))
 
 
     def test_retryIfFailedDueToNonCancelException(self):
@@ -1150,7 +1501,7 @@ class HTTPConnectionPoolRetryTests(TestCase, FakeReactorAndConnectMixin):
         pool = client.HTTPConnectionPool(None)
         connection = client._RetryingHTTP11ClientProtocol(None, pool)
         self.assertTrue(connection._shouldRetry(
-                "GET", ResponseNeverReceived([Failure(Exception())]), None))
+            b"GET", ResponseNeverReceived([Failure(Exception())]), None))
 
 
     def test_wrappedOnPersistentReturned(self):
@@ -1203,14 +1554,14 @@ class HTTPConnectionPoolRetryTests(TestCase, FakeReactorAndConnectMixin):
             return defer.succeed(protocol)
 
         bodyProducer = object()
-        request = client.Request("FOO", "/", client.Headers(), bodyProducer,
+        request = client.Request(b"FOO", b"/", client.Headers(), bodyProducer,
                                  persistent=True)
         newProtocol()
         protocol = protocols[0]
         retrier = client._RetryingHTTP11ClientProtocol(protocol, newProtocol)
 
         def _shouldRetry(m, e, bp):
-            self.assertEqual(m, "FOO")
+            self.assertEqual(m, b"FOO")
             self.assertIdentical(bp, bodyProducer)
             self.assertIsInstance(e, (RequestNotSent, ResponseNeverReceived))
             return willWeRetry
@@ -1262,8 +1613,8 @@ class HTTPConnectionPoolRetryTests(TestCase, FakeReactorAndConnectMixin):
         """
         pool = client.HTTPConnectionPool(None)
         connection = client._RetryingHTTP11ClientProtocol(None, pool)
-        self.assertTrue(connection._shouldRetry("GET", RequestNotSent(), None))
-        self.assertFalse(connection._shouldRetry("GET", RequestNotSent(), object()))
+        self.assertTrue(connection._shouldRetry(b"GET", RequestNotSent(), None))
+        self.assertFalse(connection._shouldRetry(b"GET", RequestNotSent(), object()))
 
 
     def test_onlyRetryOnce(self):
@@ -1352,10 +1703,10 @@ class CookieTestsMixin(object):
         """
         response = client._FakeUrllib2Response(
             client.Response(
-                ('HTTP', 1, 1),
+                (b'HTTP', 1, 1),
                 200,
-                'OK',
-                client.Headers({'Set-Cookie': cookies}),
+                b'OK',
+                client.Headers({b'Set-Cookie': cookies}),
                 None))
         request = client._FakeUrllib2Request(uri)
         cookieJar.extract_cookies(response, request)
@@ -1376,9 +1727,9 @@ class CookieJarTests(TestCase, CookieTestsMixin):
         cookieJar = cookielib.CookieJar()
         reqres = self.addCookies(
             cookieJar,
-            'http://example.com:1234/foo?bar',
-            ['foo=1; cow=moo; Path=/foo; Comment=hello',
-             'bar=2; Comment=goodbye'])
+            b'http://example.com:1234/foo?bar',
+            [b'foo=1; cow=moo; Path=/foo; Comment=hello',
+             b'bar=2; Comment=goodbye'])
         return cookieJar, reqres
 
 
@@ -1456,7 +1807,7 @@ class CookieAgentTests(TestCase, CookieTestsMixin, FakeReactorAndConnectMixin,
         agent = self.buildAgentForWrapperTest(self.reactor)
         cookieAgent = client.CookieAgent(agent, cookieJar)
         d = cookieAgent.request(
-            'GET', 'http://example.com:1234/foo?bar')
+            b'GET', b'http://example.com:1234/foo?bar')
 
         def _checkCookie(ignored):
             cookies = list(cookieJar)
@@ -1467,13 +1818,13 @@ class CookieAgentTests(TestCase, CookieTestsMixin, FakeReactorAndConnectMixin,
         d.addCallback(_checkCookie)
 
         req, res = self.protocol.requests.pop()
-        self.assertIdentical(req.headers.getRawHeaders('cookie'), None)
+        self.assertIdentical(req.headers.getRawHeaders(b'cookie'), None)
 
         resp = client.Response(
-            ('HTTP', 1, 1),
+            (b'HTTP', 1, 1),
             200,
-            'OK',
-            client.Headers({'Set-Cookie': ['foo=1',]}),
+            b'OK',
+            client.Headers({b'Set-Cookie': [b'foo=1',]}),
             None)
         res.callback(resp)
 
@@ -1486,8 +1837,8 @@ class CookieAgentTests(TestCase, CookieTestsMixin, FakeReactorAndConnectMixin,
         object when there is a cookie matching the request URI in the cookie
         jar.
         """
-        uri = 'http://example.com:1234/foo?bar'
-        cookie = 'foo=1'
+        uri = b'http://example.com:1234/foo?bar'
+        cookie = b'foo=1'
 
         cookieJar = cookielib.CookieJar()
         self.addCookies(cookieJar, uri, [cookie])
@@ -1495,10 +1846,10 @@ class CookieAgentTests(TestCase, CookieTestsMixin, FakeReactorAndConnectMixin,
 
         agent = self.buildAgentForWrapperTest(self.reactor)
         cookieAgent = client.CookieAgent(agent, cookieJar)
-        cookieAgent.request('GET', uri)
+        cookieAgent.request(b'GET', uri)
 
         req, res = self.protocol.requests.pop()
-        self.assertEqual(req.headers.getRawHeaders('cookie'), [cookie])
+        self.assertEqual(req.headers.getRawHeaders(b'cookie'), [cookie])
 
 
     def test_secureCookie(self):
@@ -1506,8 +1857,8 @@ class CookieAgentTests(TestCase, CookieTestsMixin, FakeReactorAndConnectMixin,
         L{CookieAgent} is able to handle secure cookies, ie cookies which
         should only be handled over https.
         """
-        uri = 'https://example.com:1234/foo?bar'
-        cookie = 'foo=1;secure'
+        uri = b'https://example.com:1234/foo?bar'
+        cookie = b'foo=1;secure'
 
         cookieJar = cookielib.CookieJar()
         self.addCookies(cookieJar, uri, [cookie])
@@ -1515,10 +1866,10 @@ class CookieAgentTests(TestCase, CookieTestsMixin, FakeReactorAndConnectMixin,
 
         agent = self.buildAgentForWrapperTest(self.reactor)
         cookieAgent = client.CookieAgent(agent, cookieJar)
-        cookieAgent.request('GET', uri)
+        cookieAgent.request(b'GET', uri)
 
         req, res = self.protocol.requests.pop()
-        self.assertEqual(req.headers.getRawHeaders('cookie'), ['foo=1'])
+        self.assertEqual(req.headers.getRawHeaders(b'cookie'), [b'foo=1'])
 
 
     def test_secureCookieOnInsecureConnection(self):
@@ -1526,8 +1877,8 @@ class CookieAgentTests(TestCase, CookieTestsMixin, FakeReactorAndConnectMixin,
         If a cookie is setup as secure, it won't be sent with the request if
         it's not over HTTPS.
         """
-        uri = 'http://example.com/foo?bar'
-        cookie = 'foo=1;secure'
+        uri = b'http://example.com/foo?bar'
+        cookie = b'foo=1;secure'
 
         cookieJar = cookielib.CookieJar()
         self.addCookies(cookieJar, uri, [cookie])
@@ -1535,10 +1886,10 @@ class CookieAgentTests(TestCase, CookieTestsMixin, FakeReactorAndConnectMixin,
 
         agent = self.buildAgentForWrapperTest(self.reactor)
         cookieAgent = client.CookieAgent(agent, cookieJar)
-        cookieAgent.request('GET', uri)
+        cookieAgent.request(b'GET', uri)
 
         req, res = self.protocol.requests.pop()
-        self.assertIdentical(None, req.headers.getRawHeaders('cookie'))
+        self.assertIdentical(None, req.headers.getRawHeaders(b'cookie'))
 
 
     def test_portCookie(self):
@@ -1546,8 +1897,8 @@ class CookieAgentTests(TestCase, CookieTestsMixin, FakeReactorAndConnectMixin,
         L{CookieAgent} supports cookies which enforces the port number they
         need to be transferred upon.
         """
-        uri = 'https://example.com:1234/foo?bar'
-        cookie = 'foo=1;port=1234'
+        uri = b'https://example.com:1234/foo?bar'
+        cookie = b'foo=1;port=1234'
 
         cookieJar = cookielib.CookieJar()
         self.addCookies(cookieJar, uri, [cookie])
@@ -1555,10 +1906,10 @@ class CookieAgentTests(TestCase, CookieTestsMixin, FakeReactorAndConnectMixin,
 
         agent = self.buildAgentForWrapperTest(self.reactor)
         cookieAgent = client.CookieAgent(agent, cookieJar)
-        cookieAgent.request('GET', uri)
+        cookieAgent.request(b'GET', uri)
 
         req, res = self.protocol.requests.pop()
-        self.assertEqual(req.headers.getRawHeaders('cookie'), ['foo=1'])
+        self.assertEqual(req.headers.getRawHeaders(b'cookie'), [b'foo=1'])
 
 
     def test_portCookieOnWrongPort(self):
@@ -1566,8 +1917,8 @@ class CookieAgentTests(TestCase, CookieTestsMixin, FakeReactorAndConnectMixin,
         When creating a cookie with a port directive, it won't be added to the
         L{cookie.CookieJar} if the URI is on a different port.
         """
-        uri = 'https://example.com:4567/foo?bar'
-        cookie = 'foo=1;port=1234'
+        uri = b'https://example.com:4567/foo?bar'
+        cookie = b'foo=1;port=1234'
 
         cookieJar = cookielib.CookieJar()
         self.addCookies(cookieJar, uri, [cookie])
@@ -1615,16 +1966,16 @@ class ContentDecoderAgentTests(TestCase, FakeReactorAndConnectMixin,
         names of the available decoder objects.
         """
         agent = client.ContentDecoderAgent(
-            self.agent, [('decoder1', Decoder1), ('decoder2', Decoder2)])
+            self.agent, [(b'decoder1', Decoder1), (b'decoder2', Decoder2)])
 
-        agent.request('GET', 'http://example.com/foo')
+        agent.request(b'GET', b'http://example.com/foo')
 
         protocol = self.protocol
 
         self.assertEqual(len(protocol.requests), 1)
         req, res = protocol.requests.pop()
-        self.assertEqual(req.headers.getRawHeaders('accept-encoding'),
-                          ['decoder1,decoder2'])
+        self.assertEqual(req.headers.getRawHeaders(b'accept-encoding'),
+                         [b'decoder1,decoder2'])
 
 
     def test_existingHeaders(self):
@@ -1633,21 +1984,21 @@ class ContentDecoderAgentTests(TestCase, FakeReactorAndConnectMixin,
         L{client.ContentDecoderAgent} creates a new field for the decoders it
         knows about.
         """
-        headers = http_headers.Headers({'foo': ['bar'],
-                                        'accept-encoding': ['fizz']})
+        headers = http_headers.Headers({b'foo': [b'bar'],
+                                        b'accept-encoding': [b'fizz']})
         agent = client.ContentDecoderAgent(
-            self.agent, [('decoder1', Decoder1), ('decoder2', Decoder2)])
-        agent.request('GET', 'http://example.com/foo', headers=headers)
+            self.agent, [(b'decoder1', Decoder1), (b'decoder2', Decoder2)])
+        agent.request(b'GET', b'http://example.com/foo', headers=headers)
 
         protocol = self.protocol
 
         self.assertEqual(len(protocol.requests), 1)
         req, res = protocol.requests.pop()
         self.assertEqual(
-            list(req.headers.getAllRawHeaders()),
-            [('Host', ['example.com']),
-             ('Foo', ['bar']),
-             ('Accept-Encoding', ['fizz', 'decoder1,decoder2'])])
+            list(sorted(req.headers.getAllRawHeaders())),
+            [(b'Accept-Encoding', [b'fizz', b'decoder1,decoder2']),
+             (b'Foo', [b'bar']),
+             (b'Host', [b'example.com'])])
 
 
     def test_plainEncodingResponse(self):
@@ -1656,12 +2007,12 @@ class ContentDecoderAgentTests(TestCase, FakeReactorAndConnectMixin,
         headers, L{client.ContentDecoderAgent} simply forwards the response.
         """
         agent = client.ContentDecoderAgent(
-            self.agent, [('decoder1', Decoder1), ('decoder2', Decoder2)])
-        deferred = agent.request('GET', 'http://example.com/foo')
+            self.agent, [(b'decoder1', Decoder1), (b'decoder2', Decoder2)])
+        deferred = agent.request(b'GET', b'http://example.com/foo')
 
         req, res = self.protocol.requests.pop()
 
-        response = Response(('HTTP', 1, 1), 200, 'OK', http_headers.Headers(),
+        response = Response((b'HTTP', 1, 1), 200, b'OK', http_headers.Headers(),
                             None)
         res.callback(response)
 
@@ -1674,14 +2025,14 @@ class ContentDecoderAgentTests(TestCase, FakeReactorAndConnectMixin,
         the response is unchanged.
         """
         agent = client.ContentDecoderAgent(
-            self.agent, [('decoder1', Decoder1), ('decoder2', Decoder2)])
-        deferred = agent.request('GET', 'http://example.com/foo')
+            self.agent, [(b'decoder1', Decoder1), (b'decoder2', Decoder2)])
+        deferred = agent.request(b'GET', b'http://example.com/foo')
 
         req, res = self.protocol.requests.pop()
 
-        headers = http_headers.Headers({'foo': ['bar'],
-                                        'content-encoding': ['fizz']})
-        response = Response(('HTTP', 1, 1), 200, 'OK', headers, None)
+        headers = http_headers.Headers({b'foo': [b'bar'],
+                                        b'content-encoding': [b'fizz']})
+        response = Response((b'HTTP', 1, 1), 200, b'OK', headers, None)
         res.callback(response)
 
         return deferred.addCallback(self.assertIdentical, response)
@@ -1693,22 +2044,22 @@ class ContentDecoderAgentTests(TestCase, FakeReactorAndConnectMixin,
         about, it stops decoding even if another encoding is known afterwards.
         """
         agent = client.ContentDecoderAgent(
-            self.agent, [('decoder1', Decoder1), ('decoder2', Decoder2)])
-        deferred = agent.request('GET', 'http://example.com/foo')
+            self.agent, [(b'decoder1', Decoder1), (b'decoder2', Decoder2)])
+        deferred = agent.request(b'GET', b'http://example.com/foo')
 
         req, res = self.protocol.requests.pop()
 
-        headers = http_headers.Headers({'foo': ['bar'],
-                                        'content-encoding':
-                                        ['decoder1,fizz,decoder2']})
-        response = Response(('HTTP', 1, 1), 200, 'OK', headers, None)
+        headers = http_headers.Headers({b'foo': [b'bar'],
+                                        b'content-encoding':
+                                        [b'decoder1,fizz,decoder2']})
+        response = Response((b'HTTP', 1, 1), 200, b'OK', headers, None)
         res.callback(response)
 
         def check(result):
             self.assertNotIdentical(response, result)
             self.assertIsInstance(result, Decoder2)
-            self.assertEqual(['decoder1,fizz'],
-                              result.headers.getRawHeaders('content-encoding'))
+            self.assertEqual([b'decoder1,fizz'],
+                             result.headers.getRawHeaders(b'content-encoding'))
 
         return deferred.addCallback(check)
 
@@ -1754,7 +2105,7 @@ class ContentDecoderAgentWithGzipTests(TestCase,
         self.reactor = self.Reactor()
         agent = self.buildAgentForWrapperTest(self.reactor)
         self.agent = client.ContentDecoderAgent(
-            agent, [("gzip", client.GzipDecoder)])
+            agent, [(b"gzip", client.GzipDecoder)])
 
 
     def test_gzipEncodingResponse(self):
@@ -1763,28 +2114,28 @@ class ContentDecoderAgentWithGzipTests(TestCase,
         L{GzipDecoder} wraps the response to return uncompressed data to the
         user.
         """
-        deferred = self.agent.request('GET', 'http://example.com/foo')
+        deferred = self.agent.request(b'GET', b'http://example.com/foo')
 
         req, res = self.protocol.requests.pop()
 
-        headers = http_headers.Headers({'foo': ['bar'],
-                                        'content-encoding': ['gzip']})
+        headers = http_headers.Headers({b'foo': [b'bar'],
+                                        b'content-encoding': [b'gzip']})
         transport = StringTransport()
-        response = Response(('HTTP', 1, 1), 200, 'OK', headers, transport)
+        response = Response((b'HTTP', 1, 1), 200, b'OK', headers, transport)
         response.length = 12
         res.callback(response)
 
         compressor = zlib.compressobj(2, zlib.DEFLATED, 16 + zlib.MAX_WBITS)
-        data = (compressor.compress('x' * 6) + compressor.compress('y' * 4) +
+        data = (compressor.compress(b'x' * 6) + compressor.compress(b'y' * 4) +
                 compressor.flush())
 
         def checkResponse(result):
             self.assertNotIdentical(result, response)
-            self.assertEqual(result.version, ('HTTP', 1, 1))
+            self.assertEqual(result.version, (b'HTTP', 1, 1))
             self.assertEqual(result.code, 200)
-            self.assertEqual(result.phrase, 'OK')
+            self.assertEqual(result.phrase, b'OK')
             self.assertEqual(list(result.headers.getAllRawHeaders()),
-                              [('Foo', ['bar'])])
+                              [(b'Foo', [b'bar'])])
             self.assertEqual(result.length, UNKNOWN_LENGTH)
             self.assertRaises(AttributeError, getattr, result, 'unknown')
 
@@ -1795,7 +2146,7 @@ class ContentDecoderAgentWithGzipTests(TestCase,
             protocol = SimpleAgentProtocol()
             result.deliverBody(protocol)
 
-            self.assertEqual(protocol.received, ['x' * 6 + 'y' * 4])
+            self.assertEqual(protocol.received, [b'x' * 6 + b'y' * 4])
             return defer.gatherResults([protocol.made, protocol.finished])
 
         deferred.addCallback(checkResponse)
@@ -1808,18 +2159,18 @@ class ContentDecoderAgentWithGzipTests(TestCase,
         If the data received by the L{GzipDecoder} isn't valid gzip-compressed
         data, the call to C{deliverBody} fails with a C{zlib.error}.
         """
-        deferred = self.agent.request('GET', 'http://example.com/foo')
+        deferred = self.agent.request(b'GET', b'http://example.com/foo')
 
         req, res = self.protocol.requests.pop()
 
-        headers = http_headers.Headers({'foo': ['bar'],
-                                        'content-encoding': ['gzip']})
+        headers = http_headers.Headers({b'foo': [b'bar'],
+                                        b'content-encoding': [b'gzip']})
         transport = StringTransport()
-        response = Response(('HTTP', 1, 1), 200, 'OK', headers, transport)
+        response = Response((b'HTTP', 1, 1), 200, b'OK', headers, transport)
         response.length = 12
         res.callback(response)
 
-        data = "not gzipped content"
+        data = b"not gzipped content"
 
         def checkResponse(result):
             response._bodyDataReceived(data)
@@ -1848,33 +2199,33 @@ class ContentDecoderAgentWithGzipTests(TestCase,
                 pass
 
             def decompress(self, data):
-                return 'x'
+                return b'x'
 
             def flush(self):
-                return 'y'
+                return b'y'
 
 
         oldDecompressObj = zlib.decompressobj
         zlib.decompressobj = decompressobj
         self.addCleanup(setattr, zlib, 'decompressobj', oldDecompressObj)
 
-        deferred = self.agent.request('GET', 'http://example.com/foo')
+        deferred = self.agent.request(b'GET', b'http://example.com/foo')
 
         req, res = self.protocol.requests.pop()
 
-        headers = http_headers.Headers({'content-encoding': ['gzip']})
+        headers = http_headers.Headers({b'content-encoding': [b'gzip']})
         transport = StringTransport()
-        response = Response(('HTTP', 1, 1), 200, 'OK', headers, transport)
+        response = Response((b'HTTP', 1, 1), 200, b'OK', headers, transport)
         res.callback(response)
 
         def checkResponse(result):
-            response._bodyDataReceived('data')
+            response._bodyDataReceived(b'data')
             response._bodyDataFinished()
 
             protocol = SimpleAgentProtocol()
             result.deliverBody(protocol)
 
-            self.assertEqual(protocol.received, ['x', 'y'])
+            self.assertEqual(protocol.received, [b'x', b'y'])
             return defer.gatherResults([protocol.made, protocol.finished])
 
         deferred.addCallback(checkResponse)
@@ -1893,7 +2244,7 @@ class ContentDecoderAgentWithGzipTests(TestCase,
                 pass
 
             def decompress(self, data):
-                return 'x'
+                return b'x'
 
             def flush(self):
                 raise zlib.error()
@@ -1903,23 +2254,23 @@ class ContentDecoderAgentWithGzipTests(TestCase,
         zlib.decompressobj = decompressobj
         self.addCleanup(setattr, zlib, 'decompressobj', oldDecompressObj)
 
-        deferred = self.agent.request('GET', 'http://example.com/foo')
+        deferred = self.agent.request(b'GET', b'http://example.com/foo')
 
         req, res = self.protocol.requests.pop()
 
-        headers = http_headers.Headers({'content-encoding': ['gzip']})
+        headers = http_headers.Headers({b'content-encoding': [b'gzip']})
         transport = StringTransport()
-        response = Response(('HTTP', 1, 1), 200, 'OK', headers, transport)
+        response = Response((b'HTTP', 1, 1), 200, b'OK', headers, transport)
         res.callback(response)
 
         def checkResponse(result):
-            response._bodyDataReceived('data')
+            response._bodyDataReceived(b'data')
             response._bodyDataFinished()
 
             protocol = SimpleAgentProtocol()
             result.deliverBody(protocol)
 
-            self.assertEqual(protocol.received, ['x', 'y'])
+            self.assertEqual(protocol.received, [b'x', b'y'])
             return defer.gatherResults([protocol.made, protocol.finished])
 
         deferred.addCallback(checkResponse)
@@ -1960,12 +2311,12 @@ class ProxyAgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         L{client.ProxyAgent} issues an HTTP request against the proxy, with the
         full URI as path, when C{request} is called.
         """
-        headers = http_headers.Headers({'foo': ['bar']})
+        headers = http_headers.Headers({b'foo': [b'bar']})
         # Just going to check the body for identity, so it doesn't need to be
         # real.
         body = object()
         self.agent.request(
-            'GET', 'http://example.com:1234/foo?bar', headers, body)
+            b'GET', b'http://example.com:1234/foo?bar', headers, body)
 
         host, port, factory = self.reactor.tcpClients.pop()[:3]
         self.assertEqual(host, "bar")
@@ -1980,12 +2331,12 @@ class ProxyAgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         self.assertEqual(len(protocol.requests), 1)
         req, res = protocol.requests.pop()
         self.assertIsInstance(req, Request)
-        self.assertEqual(req.method, 'GET')
-        self.assertEqual(req.uri, 'http://example.com:1234/foo?bar')
+        self.assertEqual(req.method, b'GET')
+        self.assertEqual(req.uri, b'http://example.com:1234/foo?bar')
         self.assertEqual(
             req.headers,
-            http_headers.Headers({'foo': ['bar'],
-                                  'host': ['example.com:1234']}))
+            http_headers.Headers({b'foo': [b'bar'],
+                                  b'host': [b'example.com:1234']}))
         self.assertIdentical(req.bodyProducer, body)
 
 
@@ -2019,7 +2370,7 @@ class ProxyAgentTests(TestCase, FakeReactorAndConnectMixin, AgentTestsMixin):
         agent = client.ProxyAgent(endpoint, self.reactor, pool=pool)
         self.assertIdentical(pool, agent._pool)
 
-        agent.request('GET', 'http://foo/')
+        agent.request(b'GET', b'http://foo/')
         self.assertEqual(agent._pool.connected, True)
 
 
@@ -2034,12 +2385,12 @@ class _RedirectAgentTestsMixin(object):
         L{client.RedirectAgent} behaves like L{client.Agent} if the response
         doesn't contain a redirect.
         """
-        deferred = self.agent.request('GET', 'http://example.com/foo')
+        deferred = self.agent.request(b'GET', b'http://example.com/foo')
 
         req, res = self.protocol.requests.pop()
 
         headers = http_headers.Headers()
-        response = Response(('HTTP', 1, 1), 200, 'OK', headers, None)
+        response = Response((b'HTTP', 1, 1), 200, b'OK', headers, None)
         res.callback(response)
 
         self.assertEqual(0, len(self.protocol.requests))
@@ -2055,7 +2406,7 @@ class _RedirectAgentTestsMixin(object):
 
         @param code: HTTP status code.
         """
-        self.agent.request('GET', 'http://example.com/foo')
+        self.agent.request(b'GET', b'http://example.com/foo')
 
         host, port = self.reactor.tcpClients.pop()[:2]
         self.assertEqual("example.com", host)
@@ -2064,13 +2415,13 @@ class _RedirectAgentTestsMixin(object):
         req, res = self.protocol.requests.pop()
 
         headers = http_headers.Headers(
-            {'location': ['https://example.com/bar']})
-        response = Response(('HTTP', 1, 1), code, 'OK', headers, None)
+            {b'location': [b'https://example.com/bar']})
+        response = Response((b'HTTP', 1, 1), code, b'OK', headers, None)
         res.callback(response)
 
         req2, res2 = self.protocol.requests.pop()
-        self.assertEqual('GET', req2.method)
-        self.assertEqual('/bar', req2.uri)
+        self.assertEqual(b'GET', req2.method)
+        self.assertEqual(b'/bar', req2.uri)
 
         host, port = self.reactor.sslClients.pop()[:2]
         self.assertEqual("example.com", host)
@@ -2107,18 +2458,18 @@ class _RedirectAgentTestsMixin(object):
 
         @param method: HTTP request method.
         """
-        self.agent.request(method, 'http://example.com/foo')
+        self.agent.request(method, b'http://example.com/foo')
 
         req, res = self.protocol.requests.pop()
 
         headers = http_headers.Headers(
-            {'location': ['http://example.com/bar']})
-        response = Response(('HTTP', 1, 1), code, 'OK', headers, None)
+            {b'location': [b'http://example.com/bar']})
+        response = Response((b'HTTP', 1, 1), code, b'OK', headers, None)
         res.callback(response)
 
         req2, res2 = self.protocol.requests.pop()
-        self.assertEqual('GET', req2.method)
-        self.assertEqual('/bar', req2.uri)
+        self.assertEqual(b'GET', req2.method)
+        self.assertEqual(b'/bar', req2.uri)
 
 
     def test_redirect303(self):
@@ -2126,7 +2477,7 @@ class _RedirectAgentTestsMixin(object):
         L{client.RedirectAgent} changes the method to I{GET} when getting a 303
         redirect on a I{POST} request.
         """
-        self._testRedirectToGet(303, 'POST')
+        self._testRedirectToGet(303, b'POST')
 
 
     def test_noLocationField(self):
@@ -2135,17 +2486,17 @@ class _RedirectAgentTestsMixin(object):
         L{client.RedirectAgent} fails with a L{ResponseFailed} error wrapping a
         L{error.RedirectWithNoLocation} exception.
         """
-        deferred = self.agent.request('GET', 'http://example.com/foo')
+        deferred = self.agent.request(b'GET', b'http://example.com/foo')
 
         req, res = self.protocol.requests.pop()
 
         headers = http_headers.Headers()
-        response = Response(('HTTP', 1, 1), 301, 'OK', headers, None)
+        response = Response((b'HTTP', 1, 1), 301, b'OK', headers, None)
         res.callback(response)
 
         fail = self.failureResultOf(deferred, client.ResponseFailed)
         fail.value.reasons[0].trap(error.RedirectWithNoLocation)
-        self.assertEqual('http://example.com/foo',
+        self.assertEqual(b'http://example.com/foo',
                          fail.value.reasons[0].value.uri)
         self.assertEqual(301, fail.value.response.code)
 
@@ -2160,17 +2511,17 @@ class _RedirectAgentTestsMixin(object):
 
         @param method: HTTP request method.
         """
-        deferred = self.agent.request(method, 'http://example.com/foo')
+        deferred = self.agent.request(method, b'http://example.com/foo')
 
         req, res = self.protocol.requests.pop()
 
         headers = http_headers.Headers()
-        response = Response(('HTTP', 1, 1), code, 'OK', headers, None)
+        response = Response((b'HTTP', 1, 1), code, b'OK', headers, None)
         res.callback(response)
 
         fail = self.failureResultOf(deferred, client.ResponseFailed)
         fail.value.reasons[0].trap(error.PageRedirect)
-        self.assertEqual('http://example.com/foo',
+        self.assertEqual(b'http://example.com/foo',
                          fail.value.reasons[0].value.location)
         self.assertEqual(code, fail.value.response.code)
 
@@ -2181,7 +2532,7 @@ class _RedirectAgentTestsMixin(object):
         L{client.RedirectAgent} fails with a L{ResponseFailed} error wrapping
         a L{error.PageRedirect} exception.
         """
-        self._testPageRedirectFailure(307, 'POST')
+        self._testPageRedirectFailure(307, b'POST')
 
 
     def test_redirectLimit(self):
@@ -2210,7 +2561,7 @@ class _RedirectAgentTestsMixin(object):
         fail = self.failureResultOf(deferred, client.ResponseFailed)
 
         fail.value.reasons[0].trap(error.InfiniteRedirection)
-        self.assertEqual('http://example.com/foo',
+        self.assertEqual(b'http://example.com/foo',
                          fail.value.reasons[0].value.location)
         self.assertEqual(302, fail.value.response.code)
 
@@ -2226,17 +2577,17 @@ class _RedirectAgentTestsMixin(object):
 
         @param finalURI: Expected final URI.
         """
-        self.agent.request('GET', uri)
+        self.agent.request(b'GET', uri)
 
         req, res = self.protocol.requests.pop()
 
         headers = http_headers.Headers(
-            {'location': [location]})
-        response = Response(('HTTP', 1, 1), 302, 'OK', headers, None)
+            {b'location': [location]})
+        response = Response((b'HTTP', 1, 1), 302, b'OK', headers, None)
         res.callback(response)
 
         req2, res2 = self.protocol.requests.pop()
-        self.assertEqual('GET', req2.method)
+        self.assertEqual(b'GET', req2.method)
         self.assertEqual(finalURI, req2.absoluteURI)
 
 
@@ -2246,14 +2597,14 @@ class _RedirectAgentTestsMixin(object):
         redirects, preserving query strings.
         """
         self._testRedirectURI(
-            'http://example.com/foo/bar', 'baz',
-            'http://example.com/foo/baz')
+            b'http://example.com/foo/bar', b'baz',
+            b'http://example.com/foo/baz')
         self._testRedirectURI(
-            'http://example.com/foo/bar', '/baz',
-            'http://example.com/baz')
+            b'http://example.com/foo/bar', b'/baz',
+            b'http://example.com/baz')
         self._testRedirectURI(
-            'http://example.com/foo/bar', '/baz?a',
-            'http://example.com/baz?a')
+            b'http://example.com/foo/bar', b'/baz?a',
+            b'http://example.com/baz?a')
 
 
     def test_relativeURIPreserveFragments(self):
@@ -2265,11 +2616,11 @@ class _RedirectAgentTestsMixin(object):
         @see: U{https://tools.ietf.org/html/draft-ietf-httpbis-p2-semantics-22#section-7.1.2}
         """
         self._testRedirectURI(
-            'http://example.com/foo/bar#frag', '/baz?a',
-            'http://example.com/baz?a#frag')
+            b'http://example.com/foo/bar#frag', b'/baz?a',
+            b'http://example.com/baz?a#frag')
         self._testRedirectURI(
-            'http://example.com/foo/bar', '/baz?a#frag2',
-            'http://example.com/baz?a#frag2')
+            b'http://example.com/foo/bar', b'/baz?a#frag2',
+            b'http://example.com/baz?a#frag2')
 
 
     def test_relativeURISchemeRelative(self):
@@ -2278,11 +2629,11 @@ class _RedirectAgentTestsMixin(object):
         redirects, replacing the hostname and port when required.
         """
         self._testRedirectURI(
-            'http://example.com/foo/bar', '//foo.com/baz',
-            'http://foo.com/baz')
+            b'http://example.com/foo/bar', b'//foo.com/baz',
+            b'http://foo.com/baz')
         self._testRedirectURI(
-            'http://example.com/foo/bar', '//foo.com:81/baz',
-            'http://foo.com:81/baz')
+            b'http://example.com/foo/bar', b'//foo.com:81/baz',
+            b'http://foo.com:81/baz')
 
 
     def test_responseHistory(self):
@@ -2337,7 +2688,7 @@ class RedirectAgentTests(TestCase, FakeReactorAndConnectMixin,
         L{client.RedirectAgent} fails with a L{ResponseFailed} error wrapping
         a L{error.PageRedirect} exception.
         """
-        self._testPageRedirectFailure(301, 'POST')
+        self._testPageRedirectFailure(301, b'POST')
 
 
     def test_302OnPost(self):
@@ -2346,7 +2697,7 @@ class RedirectAgentTests(TestCase, FakeReactorAndConnectMixin,
         L{client.RedirectAgent} fails with a L{ResponseFailed} error wrapping
         a L{error.PageRedirect} exception.
         """
-        self._testPageRedirectFailure(302, 'POST')
+        self._testPageRedirectFailure(302, b'POST')
 
 
 
@@ -2375,7 +2726,7 @@ class BrowserLikeRedirectAgentTests(TestCase,
         L{client.BrowserLikeRedirectAgent} changes the method to I{GET} when
         getting a 302 redirect on a I{POST} request.
         """
-        self._testRedirectToGet(301, 'POST')
+        self._testRedirectToGet(301, b'POST')
 
 
     def test_redirectToGet302(self):
@@ -2383,39 +2734,80 @@ class BrowserLikeRedirectAgentTests(TestCase,
         L{client.BrowserLikeRedirectAgent} changes the method to I{GET} when
         getting a 302 redirect on a I{POST} request.
         """
-        self._testRedirectToGet(302, 'POST')
+        self._testRedirectToGet(302, b'POST')
+
+
+
+class AbortableStringTransport(StringTransport):
+    """
+    A version of L{StringTransport} that supports C{abortConnection}.
+    """
+    # This should be replaced by a common version in #6530.
+    aborting = False
+
+
+    def abortConnection(self):
+        """
+        A testable version of the C{ITCPTransport.abortConnection} method.
+
+        Since this is a special case of closing the connection,
+        C{loseConnection} is also called.
+        """
+        self.aborting = True
+        self.loseConnection()
 
 
 
 class DummyResponse(object):
     """
-    Fake L{IResponse} for testing readBody that just captures the protocol
-    passed to deliverBody.
+    Fake L{IResponse} for testing readBody that captures the protocol passed to
+    deliverBody and uses it to make a connection with a transport.
 
     @ivar protocol: After C{deliverBody} is called, the protocol it was called
         with.
+
+    @ivar transport: An instance created by calling C{transportFactory} which
+        is used by L{DummyResponse.protocol} to make a connection.
     """
 
-    code = 200
-    phrase = "OK"
+    code = b"200"
+    phrase = b"OK"
 
-    def __init__(self, headers=None):
+    def __init__(self, headers=None, transportFactory=AbortableStringTransport):
         """
         @param headers: The headers for this response.  If C{None}, an empty
             L{Headers} instance will be used.
         @type headers: L{Headers}
+
+        @param transportFactory: A callable used to construct the transport.
         """
         if headers is None:
             headers = Headers()
         self.headers = headers
+        self.transport = transportFactory()
 
 
     def deliverBody(self, protocol):
         """
-        Just record the given protocol without actually delivering anything to
-        it.
+        Record the given protocol and use it to make a connection with
+        L{DummyResponse.transport}.
         """
         self.protocol = protocol
+        self.protocol.makeConnection(self.transport)
+
+
+
+class AlreadyCompletedDummyResponse(DummyResponse):
+    """
+    A dummy response that has already had its transport closed.
+    """
+    def deliverBody(self, protocol):
+        """
+        Make the connection, then remove the transport.
+        """
+        self.protocol = protocol
+        self.protocol.makeConnection(self.transport)
+        self.protocol.transport = None
 
 
 
@@ -2430,10 +2822,22 @@ class ReadBodyTests(TestCase):
         """
         response = DummyResponse()
         d = client.readBody(response)
-        response.protocol.dataReceived("first")
-        response.protocol.dataReceived("second")
+        response.protocol.dataReceived(b"first")
+        response.protocol.dataReceived(b"second")
         response.protocol.connectionLost(Failure(ResponseDone()))
-        self.assertEqual(self.successResultOf(d), "firstsecond")
+        self.assertEqual(self.successResultOf(d), b"firstsecond")
+
+
+    def test_cancel(self):
+        """
+        When cancelling the L{Deferred} returned by L{client.readBody}, the
+        connection to the server will be aborted.
+        """
+        response = DummyResponse()
+        deferred = client.readBody(response)
+        deferred.cancel()
+        self.failureResultOf(deferred, defer.CancelledError)
+        self.assertTrue(response.transport.aborting)
 
 
     def test_withPotentialDataLoss(self):
@@ -2445,20 +2849,20 @@ class ReadBodyTests(TestCase):
         """
         response = DummyResponse()
         d = client.readBody(response)
-        response.protocol.dataReceived("first")
-        response.protocol.dataReceived("second")
+        response.protocol.dataReceived(b"first")
+        response.protocol.dataReceived(b"second")
         response.protocol.connectionLost(Failure(PotentialDataLoss()))
         failure = self.failureResultOf(d)
         failure.trap(client.PartialDownloadError)
         self.assertEqual({
-                "status": failure.value.status,
-                "message": failure.value.message,
-                "body": failure.value.response,
-                }, {
-                "status": 200,
-                "message": "OK",
-                "body": "firstsecond",
-                })
+            "status": failure.value.status,
+            "message": failure.value.message,
+            "body": failure.value.response,
+        }, {
+            "status": b"200",
+            "message": b"OK",
+            "body": b"firstsecond",
+        })
 
 
     def test_otherErrors(self):
@@ -2469,9 +2873,39 @@ class ReadBodyTests(TestCase):
         """
         response = DummyResponse()
         d = client.readBody(response)
-        response.protocol.dataReceived("first")
+        response.protocol.dataReceived(b"first")
         response.protocol.connectionLost(
             Failure(ConnectionLost("mystery problem")))
         reason = self.failureResultOf(d)
         reason.trap(ConnectionLost)
         self.assertEqual(reason.value.args, ("mystery problem",))
+
+
+    def test_deprecatedTransport(self):
+        """
+        Calling L{client.readBody} with a transport that does not implement
+        L{twisted.internet.interfaces.ITCPTransport} produces a deprecation
+        warning, but no exception when cancelling.
+        """
+        response = DummyResponse(transportFactory=StringTransport)
+        d = self.assertWarns(
+            DeprecationWarning,
+            'Using readBody with a transport that does not have an '
+            'abortConnection method',
+            __file__,
+            lambda: client.readBody(response))
+        d.cancel()
+        self.failureResultOf(d, defer.CancelledError)
+
+
+    def test_deprecatedTransportNoWarning(self):
+        """
+        Calling L{client.readBody} with a response that has already had its
+        transport closed (eg. for a very small request) will not trigger a
+        deprecation warning.
+        """
+        response = AlreadyCompletedDummyResponse()
+        client.readBody(response)
+
+        warnings = self.flushWarnings()
+        self.assertEqual(len(warnings), 0)

@@ -2,6 +2,7 @@
 # Copyright (c) Twisted Matrix Laboratories.
 # See LICENSE for details.
 
+from twisted.python.reflect import namedAny
 from twisted.trial import unittest
 from twisted.test.proto_helpers import StringTransport
 
@@ -99,7 +100,7 @@ class ByteGroupingsMixin(MockMixin):
 
 del _byteGroupingTestTemplate
 
-class ServerArrowKeys(ByteGroupingsMixin, unittest.TestCase):
+class ServerArrowKeysTests(ByteGroupingsMixin, unittest.TestCase):
     protocolFactory = ServerProtocol
 
     # All the arrow keys once
@@ -115,7 +116,7 @@ class ServerArrowKeys(ByteGroupingsMixin, unittest.TestCase):
         self.assertFalse(occurrences(proto))
 
 
-class PrintableCharacters(ByteGroupingsMixin, unittest.TestCase):
+class PrintableCharactersTests(ByteGroupingsMixin, unittest.TestCase):
     protocolFactory = ServerProtocol
 
     # Some letters and digits, first on their own, then capitalized,
@@ -137,7 +138,7 @@ class PrintableCharacters(ByteGroupingsMixin, unittest.TestCase):
         occs = occurrences(proto)
         self.assertFalse(occs, "%r should have been []" % (occs,))
 
-class ServerFunctionKeys(ByteGroupingsMixin, unittest.TestCase):
+class ServerFunctionKeysTests(ByteGroupingsMixin, unittest.TestCase):
     """Test for parsing and dispatching function keys (F1 - F12)
     """
     protocolFactory = ServerProtocol
@@ -158,7 +159,7 @@ class ServerFunctionKeys(ByteGroupingsMixin, unittest.TestCase):
             self.assertEqual(occurrences(result), [])
         self.assertFalse(occurrences(proto))
 
-class ClientCursorMovement(ByteGroupingsMixin, unittest.TestCase):
+class ClientCursorMovementTests(ByteGroupingsMixin, unittest.TestCase):
     protocolFactory = ClientProtocol
 
     d2 = "\x1b[2B"
@@ -178,7 +179,7 @@ class ClientCursorMovement(ByteGroupingsMixin, unittest.TestCase):
             self.assertEqual(occurrences(result), [])
         self.assertFalse(occurrences(proto))
 
-class ClientControlSequences(unittest.TestCase, MockMixin):
+class ClientControlSequencesTests(unittest.TestCase, MockMixin):
     def setUp(self):
         self.transport = StringTransport()
         self.proto = Mock()
@@ -461,7 +462,7 @@ class ServerProtocolOutputTests(unittest.TestCase):
 
 
 
-class Deprecations(unittest.TestCase):
+class DeprecationsTests(unittest.TestCase):
     """
     Tests to ensure deprecation of L{insults.colors} and L{insults.client}
     """
@@ -480,7 +481,7 @@ class Deprecations(unittest.TestCase):
         """
         The L{insults.colors} module is deprecated
         """
-        from twisted.conch.insults import colors
+        namedAny('twisted.conch.insults.colors')
         self.ensureDeprecated("twisted.conch.insults.colors was deprecated "
                               "in Twisted 10.1.0: Please use "
                               "twisted.conch.insults.helper instead.")
@@ -490,7 +491,7 @@ class Deprecations(unittest.TestCase):
         """
         The L{insults.client} module is deprecated
         """
-        from twisted.conch.insults import client
+        namedAny('twisted.conch.insults.client')
         self.ensureDeprecated("twisted.conch.insults.client was deprecated "
                               "in Twisted 10.1.0: Please use "
                               "twisted.conch.insults.insults instead.")

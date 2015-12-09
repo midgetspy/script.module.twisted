@@ -11,7 +11,7 @@ import os, time, pickle, errno, stat
 import contextlib
 from pprint import pformat
 
-from twisted.python.compat import _PY3
+from twisted.python.compat import _PY3, unicode
 from twisted.python.win32 import WindowsError, ERROR_DIRECTORY
 from twisted.python import filepath
 from twisted.python.runtime import platform
@@ -33,7 +33,7 @@ class BytesTestCase(TestCase):
 
 
 
-class AbstractFilePathTestCase(BytesTestCase):
+class AbstractFilePathTests(BytesTestCase):
     """
     Tests for L{IFilePath} implementations.
     """
@@ -432,7 +432,7 @@ class ExplodingFilePath(filepath.FilePath):
 
 
 
-class PermissionsTestCase(BytesTestCase):
+class PermissionsTests(BytesTestCase):
     """
     Test Permissions and RWX classes
     """
@@ -579,7 +579,7 @@ class PermissionsTestCase(BytesTestCase):
 
 
 
-class FilePathTestCase(AbstractFilePathTestCase):
+class FilePathTests(AbstractFilePathTests):
     """
     Test various L{FilePath} path manipulations.
 
@@ -785,7 +785,7 @@ class FilePathTestCase(AbstractFilePathTestCase):
     def testPreauthChild(self):
         fp = filepath.FilePath(b'.')
         fp.preauthChild(b'foo/bar')
-        self.assertRaises(filepath.InsecurePath, fp.child, b'/foo')
+        self.assertRaises(filepath.InsecurePath, fp.child, u'/mon\u20acy')
 
     def testStatCache(self):
         p = self.path.child(b'stattest')
@@ -869,7 +869,8 @@ class FilePathTestCase(AbstractFilePathTestCase):
         L{InsecurePath} is raised.
         """
         self.assertRaises(
-            filepath.InsecurePath, self.path.descendant, [b'a', b'..'])
+            filepath.InsecurePath,
+            self.path.descendant, [u'mon\u20acy', u'..'])
 
 
     def testSibling(self):
@@ -1365,8 +1366,61 @@ class FilePathTestCase(AbstractFilePathTestCase):
             self.assertEqual(self.path.child(b"sub1").getPermissions(),
                               filepath.Permissions(mode))
         self.path.child(b"sub1").chmod(0o764) #sanity check
-        self.assertEqual(self.path.child(b"sub1").getPermissions().shorthand(),
-                          "rwxrw-r--")
+        self.assertEqual(
+            self.path.child(b"sub1").getPermissions().shorthand(),
+            "rwxrw-r--")
+
+
+    def test_deprecateStatinfoGetter(self):
+        """
+        Getting L{twisted.python.filepath.FilePath.statinfo} is deprecated.
+        """
+        fp = filepath.FilePath(self.mktemp())
+        fp.statinfo
+        warningInfo = self.flushWarnings([self.test_deprecateStatinfoGetter])
+        self.assertEquals(len(warningInfo), 1)
+        self.assertEquals(warningInfo[0]['category'], DeprecationWarning)
+        self.assertEquals(
+            warningInfo[0]['message'],
+            "twisted.python.filepath.FilePath.statinfo was deprecated in "
+            "Twisted 15.0.0; please use other FilePath methods such as "
+            "getsize(), isdir(), getModificationTime(), etc. instead")
+
+
+    def test_deprecateStatinfoSetter(self):
+        """
+        Setting L{twisted.python.filepath.FilePath.statinfo} is deprecated.
+        """
+        fp = filepath.FilePath(self.mktemp())
+        fp.statinfo = None
+        warningInfo = self.flushWarnings([self.test_deprecateStatinfoSetter])
+        self.assertEquals(len(warningInfo), 1)
+        self.assertEquals(warningInfo[0]['category'], DeprecationWarning)
+        self.assertEquals(
+            warningInfo[0]['message'],
+            "twisted.python.filepath.FilePath.statinfo was deprecated in "
+            "Twisted 15.0.0; please use other FilePath methods such as "
+            "getsize(), isdir(), getModificationTime(), etc. instead")
+
+
+    def test_deprecateStatinfoSetterSets(self):
+        """
+        Setting L{twisted.python.filepath.FilePath.statinfo} changes the value
+        of _statinfo such that getting statinfo again returns the new value.
+        """
+        fp = filepath.FilePath(self.mktemp())
+        fp.statinfo = None
+        self.assertEquals(fp.statinfo, None)
+
+
+    def test_filePathNotDeprecated(self):
+        """
+        While accessing L{twisted.python.filepath.FilePath.statinfo} is
+        deprecated, the filepath itself is not.
+        """
+        filepath.FilePath(self.mktemp())
+        warningInfo = self.flushWarnings([self.test_filePathNotDeprecated])
+        self.assertEquals(warningInfo, [])
 
 
     def test_getPermissions_Windows(self):
@@ -1445,11 +1499,11 @@ class FilePathTestCase(AbstractFilePathTestCase):
         # monkey patch in a fake restat method for self.path
         fake = FakeStat()
         def fakeRestat(*args, **kwargs):
-            self.path.statinfo = fake
+            self.path._statinfo = fake
         self.path.restat = fakeRestat
 
         # ensure that restat will need to be called to get values
-        self.path.statinfo = None
+        self.path._statinfo = None
 
         self.assertEqual(self.path.getInodeNumber(), fake.st_ino)
         self.assertEqual(self.path.getDevice(), fake.st_dev)
@@ -1556,3 +1610,422 @@ class SetContentTests(BytesTestCase):
         fp = TrackingFilePath(self.mktemp())
         fp.setContent(b"goodbye", b"-something-else")
         self._assertOneOpened(fp, b"-something-else")
+
+
+
+class UnicodeFilePathTests(TestCase):
+    """
+    L{FilePath} instances should have the same internal representation as they
+    were instantiated with.
+    """
+
+    def test_UnicodeInstantiation(self):
+        """
+        L{FilePath} instantiated with a text path will return a text-mode
+        FilePath.
+        """
+        fp = filepath.FilePath(u'./mon\u20acy')
+        self.assertEqual(type(fp.path), unicode)
+
+
+    def test_UnicodeInstantiationBytesChild(self):
+        """
+        Calling L{FilePath.child} on a text-mode L{FilePath} with a L{bytes}
+        subpath will return a bytes-mode FilePath.
+        """
+        fp = filepath.FilePath(u'./parent-mon\u20acy')
+        child = fp.child(u'child-mon\u20acy'.encode('utf-8'))
+        self.assertEqual(type(child.path), bytes)
+
+
+    def test_UnicodeInstantiationUnicodeChild(self):
+        """
+        Calling L{FilePath.child} on a text-mode L{FilePath} with a text
+        subpath will return a text-mode FilePath.
+        """
+        fp = filepath.FilePath(u'./parent-mon\u20acy')
+        child = fp.child(u'mon\u20acy')
+        self.assertEqual(type(child.path), unicode)
+
+
+    def test_UnicodeInstantiationUnicodePreauthChild(self):
+        """
+        Calling L{FilePath.preauthChild} on a text-mode L{FilePath} with a text
+        subpath will return a text-mode FilePath.
+        """
+        fp = filepath.FilePath(u'./parent-mon\u20acy')
+        child = fp.preauthChild(u'mon\u20acy')
+        self.assertEqual(type(child.path), unicode)
+
+
+    def test_UnicodeInstantiationBytesPreauthChild(self):
+        """
+        Calling L{FilePath.preauthChild} on a text-mode L{FilePath} with a bytes
+        subpath will return a bytes-mode FilePath.
+        """
+        fp = filepath.FilePath(u'./parent-mon\u20acy')
+        child = fp.preauthChild(u'child-mon\u20acy'.encode('utf-8'))
+        self.assertEqual(type(child.path), bytes)
+
+
+    def test_BytesInstantiation(self):
+        """
+        L{FilePath} instantiated with a L{bytes} path will return a bytes-mode
+        FilePath.
+        """
+        fp = filepath.FilePath(b"./")
+        self.assertEqual(type(fp.path), bytes)
+
+
+    def test_BytesInstantiationBytesChild(self):
+        """
+        Calling L{FilePath.child} on a bytes-mode L{FilePath} with a bytes
+        subpath will return a bytes-mode FilePath.
+        """
+        fp = filepath.FilePath(b"./")
+        child = fp.child(u'child-mon\u20acy'.encode('utf-8'))
+        self.assertEqual(type(child.path), bytes)
+
+
+    def test_BytesInstantiationUnicodeChild(self):
+        """
+        Calling L{FilePath.child} on a bytes-mode L{FilePath} with a text
+        subpath will return a text-mode FilePath.
+        """
+        fp = filepath.FilePath(u'parent-mon\u20acy'.encode('utf-8'))
+        child = fp.child(u"mon\u20acy")
+        self.assertEqual(type(child.path), unicode)
+
+
+    def test_BytesInstantiationBytesPreauthChild(self):
+        """
+        Calling L{FilePath.preauthChild} on a bytes-mode L{FilePath} with a
+        bytes subpath will return a bytes-mode FilePath.
+        """
+        fp = filepath.FilePath(u'./parent-mon\u20acy'.encode('utf-8'))
+        child = fp.preauthChild(u'child-mon\u20acy'.encode('utf-8'))
+        self.assertEqual(type(child.path), bytes)
+
+
+    def test_BytesInstantiationUnicodePreauthChild(self):
+        """
+        Calling L{FilePath.preauthChild} on a bytes-mode L{FilePath} with a text
+        subpath will return a text-mode FilePath.
+        """
+        fp = filepath.FilePath(u'./parent-mon\u20acy'.encode('utf-8'))
+        child = fp.preauthChild(u"mon\u20acy")
+        self.assertEqual(type(child.path), unicode)
+
+
+    def test_unicoderepr(self):
+        """
+        The repr of a L{unicode} L{FilePath} shouldn't burst into flames.
+        """
+        fp = filepath.FilePath(u"/mon\u20acy")
+        reprOutput = repr(fp)
+        if _PY3:
+            self.assertEqual("FilePath('/mon\u20acy')", reprOutput)
+        else:
+            self.assertEqual("FilePath(u'/mon\\u20acy')", reprOutput)
+
+
+    def test_unicodereprOnBrokenPy26(self):
+        """
+        The repr of a L{unicode} L{FilePath} shouldn't burst into flames. This
+        test case is for Pythons prior to 2.6.5 which has a broken abspath which
+        coerces some Unicode paths to bytes.
+        """
+        fp = filepath.FilePath(u"/")
+        reprOutput = repr(fp)
+        if _PY3:
+            self.assertEqual("FilePath('/')", reprOutput)
+        else:
+            self.assertEqual("FilePath(u'/')", reprOutput)
+
+
+    def test_bytesrepr(self):
+        """
+        The repr of a L{bytes} L{FilePath} shouldn't burst into flames.
+        """
+        fp = filepath.FilePath(u'/parent-mon\u20acy'.encode('utf-8'))
+        reprOutput = repr(fp)
+        if _PY3:
+            self.assertEqual(
+                "FilePath(b'/parent-mon\\xe2\\x82\\xacy')", reprOutput)
+        else:
+            self.assertEqual(
+                "FilePath('/parent-mon\\xe2\\x82\\xacy')", reprOutput)
+
+
+    def test_unicodereprWindows(self):
+        """
+        The repr of a L{unicode} L{FilePath} shouldn't burst into flames.
+        """
+        fp = filepath.FilePath(u"C:\\")
+        reprOutput = repr(fp)
+        if _PY3:
+            self.assertEqual("FilePath('C:\\\\')", reprOutput)
+        else:
+            self.assertEqual("FilePath(u'C:\\\\')", reprOutput)
+
+
+    def test_bytesreprWindows(self):
+        """
+        The repr of a L{bytes} L{FilePath} shouldn't burst into flames.
+        """
+        fp = filepath.FilePath(b"C:\\")
+        reprOutput = repr(fp)
+        if _PY3:
+            self.assertEqual("FilePath(b'C:\\\\')", reprOutput)
+        else:
+            self.assertEqual("FilePath('C:\\\\')", reprOutput)
+
+
+    if platform.isWindows():
+        test_unicoderepr.skip = "Test will not work on Windows"
+        test_unicodereprOnBrokenPy26.skip = "Test will not work on Windows"
+        test_bytesrepr.skip = "Test will not work on Windows"
+    else:
+        test_unicodereprWindows.skip = "Test only works on Windows"
+        test_bytesreprWindows.skip = "Test only works on Windows"
+
+
+    def test_mixedTypeGlobChildren(self):
+        """
+        C{globChildren} will return the same type as the pattern argument.
+        """
+        fp = filepath.FilePath(u"/")
+        children = fp.globChildren(b"*")
+        self.assertIsInstance(children[0].path, bytes)
+
+
+    def test_unicodeGlobChildren(self):
+        """
+        C{globChildren} works with L{unicode}.
+        """
+        fp = filepath.FilePath(u"/")
+        children = fp.globChildren(u"*")
+        self.assertIsInstance(children[0].path, unicode)
+
+
+    def test_unicodeBasename(self):
+        """
+        Calling C{basename} on an text- L{FilePath} returns L{unicode}.
+        """
+        fp = filepath.FilePath(u"./")
+        self.assertIsInstance(fp.basename(), unicode)
+
+
+    def test_unicodeDirname(self):
+        """
+        Calling C{dirname} on a text-mode L{FilePath} returns L{unicode}.
+        """
+        fp = filepath.FilePath(u"./")
+        self.assertIsInstance(fp.dirname(), unicode)
+
+
+    def test_unicodeParent(self):
+        """
+        Calling C{parent} on a text-mode L{FilePath} will return a text-mode
+        L{FilePath}.
+        """
+        fp = filepath.FilePath(u"./")
+        parent = fp.parent()
+        self.assertIsInstance(parent.path, unicode)
+
+
+    def test_mixedTypeTemporarySibling(self):
+        """
+        A L{bytes} extension to C{temporarySibling} will mean a L{bytes} mode
+        L{FilePath} is returned.
+        """
+        fp = filepath.FilePath(u"./mon\u20acy")
+        tempSibling = fp.temporarySibling(b".txt")
+        self.assertIsInstance(tempSibling.path, bytes)
+
+
+    def test_unicodeTemporarySibling(self):
+        """
+        A L{unicode} extension to C{temporarySibling} will mean a L{unicode}
+        mode L{FilePath} is returned.
+        """
+        fp = filepath.FilePath(u"/tmp/mon\u20acy")
+        tempSibling = fp.temporarySibling(u".txt")
+        self.assertIsInstance(tempSibling.path, unicode)
+
+
+    def test_mixedTypeSiblingExtensionSearch(self):
+        """
+        C{siblingExtensionSearch} called with L{bytes} on a L{unicode}-mode
+        L{FilePath} will return a L{list} of L{bytes}-mode L{FilePath}s.
+        """
+        fp = filepath.FilePath(u"./mon\u20acy")
+        sibling = filepath.FilePath(fp._asTextPath() + u".txt")
+        sibling.touch()
+        newPath = fp.siblingExtensionSearch(b".txt")
+
+        self.assertIsInstance(newPath, filepath.FilePath)
+        self.assertIsInstance(newPath.path, bytes)
+
+
+    def test_unicodeSiblingExtensionSearch(self):
+        """
+        C{siblingExtensionSearch} called with L{unicode} on a L{unicode}-mode
+        L{FilePath} will return a L{list} of L{unicode}-mode L{FilePath}s.
+        """
+        fp = filepath.FilePath(u"./mon\u20acy")
+        sibling = filepath.FilePath(fp._asTextPath() + u".txt")
+        sibling.touch()
+
+        newPath = fp.siblingExtensionSearch(u".txt")
+
+        self.assertIsInstance(newPath, filepath.FilePath)
+        self.assertIsInstance(newPath.path, unicode)
+
+
+    def test_mixedTypeSiblingExtension(self):
+        """
+        C{siblingExtension} called with L{bytes} on a L{unicode}-mode
+        L{FilePath} will return a L{bytes}-mode L{FilePath}.
+        """
+        fp = filepath.FilePath(u"./mon\u20acy")
+        sibling = filepath.FilePath(fp._asTextPath() + u".txt")
+        sibling.touch()
+
+        newPath = fp.siblingExtension(b".txt")
+
+        self.assertIsInstance(newPath, filepath.FilePath)
+        self.assertIsInstance(newPath.path, bytes)
+
+
+    def test_unicodeSiblingExtension(self):
+        """
+        C{siblingExtension} called with L{unicode} on a L{unicode}-mode
+        L{FilePath} will return a L{unicode}-mode L{FilePath}.
+        """
+        fp = filepath.FilePath(u"./mon\u20acy")
+        sibling = filepath.FilePath(fp._asTextPath() + u".txt")
+        sibling.touch()
+
+        newPath = fp.siblingExtension(u".txt")
+
+        self.assertIsInstance(newPath, filepath.FilePath)
+        self.assertIsInstance(newPath.path, unicode)
+
+
+    def test_mixedTypeChildSearchPreauth(self):
+        """
+        C{childSearchPreauth} called with L{bytes} on a L{unicode}-mode
+        L{FilePath} will return a L{bytes}-mode L{FilePath}.
+        """
+        fp = filepath.FilePath(u"./mon\u20acy")
+        fp.createDirectory()
+        self.addCleanup(lambda: fp.remove())
+        child = fp.child("text.txt")
+        child.touch()
+
+        newPath = fp.childSearchPreauth(b"text.txt")
+
+        self.assertIsInstance(newPath, filepath.FilePath)
+        self.assertIsInstance(newPath.path, bytes)
+
+
+    def test_unicodeChildSearchPreauth(self):
+        """
+        C{childSearchPreauth} called with L{unicode} on a L{unicode}-mode
+        L{FilePath} will return a L{unicode}-mode L{FilePath}.
+        """
+        fp = filepath.FilePath(u"./mon\u20acy")
+        fp.createDirectory()
+        self.addCleanup(lambda: fp.remove())
+        child = fp.child("text.txt")
+        child.touch()
+
+        newPath = fp.childSearchPreauth(u"text.txt")
+
+        self.assertIsInstance(newPath, filepath.FilePath)
+        self.assertIsInstance(newPath.path, unicode)
+
+
+    def test_asBytesModeFromUnicode(self):
+        """
+        C{asBytesMode} on a L{unicode}-mode L{FilePath} returns a new
+        L{bytes}-mode L{FilePath}.
+        """
+        fp = filepath.FilePath(u"./tmp")
+        newfp = fp.asBytesMode()
+        self.assertIsNot(fp, newfp)
+        self.assertIsInstance(newfp.path, bytes)
+
+
+    def test_asTextModeFromBytes(self):
+        """
+        C{asBytesMode} on a L{unicode}-mode L{FilePath} returns a new
+        L{bytes}-mode L{FilePath}.
+        """
+        fp = filepath.FilePath(b"./tmp")
+        newfp = fp.asTextMode()
+        self.assertIsNot(fp, newfp)
+        self.assertIsInstance(newfp.path, unicode)
+
+
+    def test_asBytesModeFromBytes(self):
+        """
+        C{asBytesMode} on a L{bytes}-mode L{FilePath} returns the same
+        L{bytes}-mode L{FilePath}.
+        """
+        fp = filepath.FilePath(b"./tmp")
+        newfp = fp.asBytesMode()
+        self.assertIs(fp, newfp)
+        self.assertIsInstance(newfp.path, bytes)
+
+
+    def test_asTextModeFromUnicode(self):
+        """
+        C{asTextMode} on a L{unicode}-mode L{FilePath} returns the same
+        L{unicode}-mode L{FilePath}.
+        """
+        fp = filepath.FilePath(u"./tmp")
+        newfp = fp.asTextMode()
+        self.assertIs(fp, newfp)
+        self.assertIsInstance(newfp.path, unicode)
+
+
+    def test_asBytesModeFromUnicodeWithEncoding(self):
+        """
+        C{asBytesMode} with an C{encoding} argument uses that encoding when
+        coercing the L{unicode}-mode L{FilePath} to a L{bytes}-mode L{FilePath}.
+        """
+        fp = filepath.FilePath(u"\u2603")
+        newfp = fp.asBytesMode(encoding="utf-8")
+        self.assertIn(b"\xe2\x98\x83", newfp.path)
+
+
+    def test_asTextModeFromBytesWithEncoding(self):
+        """
+        C{asTextMode} with an C{encoding} argument uses that encoding when
+        coercing the L{bytes}-mode L{FilePath} to a L{unicode}-mode L{FilePath}.
+        """
+        fp = filepath.FilePath(b'\xe2\x98\x83')
+        newfp = fp.asTextMode(encoding="utf-8")
+        self.assertIn(u"\u2603", newfp.path)
+
+
+    def test_asBytesModeFromUnicodeWithUnusableEncoding(self):
+        """
+        C{asBytesMode} with an C{encoding} argument that can't be used to encode
+        the unicode path raises a L{UnicodeError}.
+        """
+        fp = filepath.FilePath(u"\u2603")
+        with self.assertRaises(UnicodeError):
+            fp.asBytesMode(encoding="ascii")
+
+
+    def test_asTextModeFromBytesWithUnusableEncoding(self):
+        """
+        C{asTextMode} with an C{encoding} argument that can't be used to encode
+        the unicode path raises a L{UnicodeError}.
+        """
+        fp = filepath.FilePath(b"\u2603")
+        with self.assertRaises(UnicodeError):
+            fp.asTextMode(encoding="utf-32")
